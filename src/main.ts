@@ -8,6 +8,12 @@ import {
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+app.enableCors({
+    origin: 'http://localhost:3000', // port ของ Next.js
+    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+    credentials: true,
+  });
+
   // 🔐 เปิด ValidationPipe (งานจริงควรมี)
   app.useGlobalPipes(
     new ValidationPipe({

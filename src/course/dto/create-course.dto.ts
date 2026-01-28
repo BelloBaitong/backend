@@ -1,4 +1,4 @@
-import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Min, MinLength } from 'class-validator';
+import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Min, MinLength,IsUrl } from 'class-validator';
 import { CourseCategory } from '../entities/course.entity';
 
 export class CreateCourseDto {
@@ -7,12 +7,16 @@ export class CreateCourseDto {
   @MinLength(2)
   courseCode: string;
 
+// ✅ ภาษาไทย
   @IsString()
-  @IsNotEmpty()
   @MinLength(2)
-  courseName: string;
+  courseNameTh: string;
 
+  // ✅ ภาษาอังกฤษ
   @IsString()
+  @MinLength(2)
+  courseNameEn: string;  @IsString()
+
   @IsOptional()
   description?: string;
 
@@ -22,4 +26,9 @@ export class CreateCourseDto {
 
   @IsEnum(CourseCategory)
   category: CourseCategory;
+
+  @IsUrl()
+  @IsOptional()
+  imageUrl?: string;
+
 }

@@ -1,5 +1,7 @@
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column,OneToMany } from 'typeorm';
 import { Exclude } from 'class-transformer';
+import { Review } from '../../review/entities/review.entity';
+
 
 
 @Entity()
@@ -26,4 +28,10 @@ export class User {
 
   @Column({ type: 'enum', enum: ['m', 'f', 'u'] })
   gender: string;
+
+  @OneToMany(() => Review, (review) => review.user)
+  reviews: Review[];
 }
+
+
+

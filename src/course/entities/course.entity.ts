@@ -1,4 +1,6 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, OneToMany} from 'typeorm';
+import { Review } from '../../review/entities/review.entity';
+
 
 export enum CourseCategory {
   ELECTIVE = 'ELECTIVE', // วิชาเลือก
@@ -14,7 +16,11 @@ export class Course {
   courseCode: string; // รหัสวิชา
 
   @Column({ type: 'varchar', length: 255 })
-  courseName: string; // ชื่อวิชา
+  courseNameTh: string; // ชื่อวิชา
+
+  // ✅ ชื่อวิชาภาษาอังกฤษ
+  @Column({ type: 'varchar', length: 255 })
+  courseNameEn: string;
 
   @Column({ type: 'text', nullable: true })
   description?: string; // คำอธิบายรายวิชา
@@ -25,6 +31,14 @@ export class Course {
   @Column({ type: 'enum', enum: CourseCategory })
   category: CourseCategory; // หมวดวิชา
 
+  @Column({ type: 'text', nullable: true })
+  imageUrl?: string;
+  // รูปภาพประกอบวิชา
   @CreateDateColumn()
   createdAt: Date;
+
+  @OneToMany(() => Review, (review) => review.course)
+  reviews: Review[];
+
 }
+
