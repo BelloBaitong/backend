@@ -52,4 +52,69 @@ async updateUser(id: number, updateUserDto: UpdateUserDto): Promise<User> {
     if (result.affected === 0)
       throw new NotFoundException('User not found');
   }
+    // =========================
+  // ✅ Google Login helpers
+  // =========================
+
+  async findByEmail(email: string): Promise<User | null> {
+    return this.userRepository.findOne({ where: { email } });
+  }
+
+    async createGoogleUser(data: {
+    email: string;
+    name: string;
+    picture?: string;
+    provider: string;
+    providerId: string;
+  }): Promise<User> {
+    const autoUsername = data.email.split('@')[0];
+
+    const user = this.userRepository.create({
+      name: data.name,
+      email: data.email,
+      username: autoUsername,
+
+      // ✅ ถ้า entity คุณมีคอลัมน์เหล่านี้อยู่ ก็ใส่ได้เลย
+      // ถ้าไม่มี TS จะฟ้อง -> ให้ลบ 3 บรรทัดนี้ออก (provider/providerId/picture)
+      provider: data.provider,
+      providerId: data.providerId,
+      picture: data.picture ?? '',
+
+      // ✅ Google ไม่มีข้อมูล 3 ตัวนี้ → ใส่ default กัน DB/Entity not-null พัง
+      gender: 'u',
+      password: 'GOOGLE_LOGIN', // กัน not-null (ไม่ใช้จริง เพราะ login ผ่าน Google)
+      age: 0, // กัน not-null
+    });
+
+    return this.userRepository.save(user);
+  }
+
+  async findOrCreateGoogleUser(data: {
+    email: string;
+    name: string;
+    picture?: string;
+    provider: string;
+    providerId: string;
+  }): Promise<User> {
+    const existing = await this.findByEmail(data.email);
+
+    if (existing) {
+      // ✅ อัปเดตเบาๆ ไม่แตะ password/age
+      existing.name = data.name ?? existing.name;
+
+      // username ถ้าว่างให้เดาจาก email
+      if (!existing.username) existing.username = data.email.split('@')[0];
+
+      // ถ้ามีคอลัมน์พวกนี้ใน entity ก็อัปเดต (ถ้าไม่มี ให้ลบทิ้ง)
+      (existing as any).provider = data.provider;
+      (existing as any).providerId = data.providerId;
+      (existing as any).picture = data.picture ?? (existing as any).picture;
+
+      return this.userRepository.save(existing);
+    }
+
+    return this.createGoogleUser(data);
+  }
+
+
 }

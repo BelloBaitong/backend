@@ -6,8 +6,12 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { UserModule } from './user/user.module';
 import { CourseModule } from './course/course.module';
 import { ReviewModule } from './review/review.module';
+import { AuthModule } from './auth/auth.module';
+
+
 
 @Module({
+
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     TypeOrmModule.forRootAsync({
@@ -27,6 +31,7 @@ import { ReviewModule } from './review/review.module';
     UserModule,
     CourseModule,
     ReviewModule,
+    AuthModule,
   ],
     controllers: [AppController],
     providers: [AppService],

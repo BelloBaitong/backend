@@ -1,14 +1,14 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';  // เพิ่มบรรทัดนี้
+import { TypeOrmModule } from '@nestjs/typeorm';
+
+import { User } from './entities/user.entity';
 import { UserService } from './user.service';
 import { UserController } from './user.controller';
-import { User } from './entities/user.entity';     // เพิ่มบรรทัดนี้
 
 @Module({
-  imports: [
-    TypeOrmModule.forFeature([User])  // เพิ่มตรงนี้
-  ],
+  imports: [TypeOrmModule.forFeature([User])],
   controllers: [UserController],
   providers: [UserService],
+  exports: [UserService], // ✅ สำคัญ: ให้ module อื่น (AuthModule) ใช้ UserService ได้
 })
 export class UserModule {}
