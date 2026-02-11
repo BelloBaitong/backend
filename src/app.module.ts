@@ -7,6 +7,8 @@ import { UserModule } from './user/user.module';
 import { CourseModule } from './course/course.module';
 import { ReviewModule } from './review/review.module';
 import { AuthModule } from './auth/auth.module';
+import { RecommendationModule } from './recommendation/recommendation.module';
+
 
 
 
@@ -25,13 +27,15 @@ import { AuthModule } from './auth/auth.module';
         password: config.get<string>("DB_PASSWORD"),
         database: config.get<string>("DB_NAME"),
         autoLoadEntities: true,   // ให้ nest โหลด entity ให้เอง
-        synchronize: true,        // dev ได้ แต่ production ไม่แนะนำ
+        synchronize: false,        // dev ได้ แต่ production ไม่แนะนำ
       }),
     }),
     UserModule,
     CourseModule,
     ReviewModule,
     AuthModule,
+    RecommendationModule,
+
   ],
     controllers: [AppController],
     providers: [AppService],

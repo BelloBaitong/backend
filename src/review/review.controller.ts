@@ -1,6 +1,8 @@
-import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, UseGuards, Req } from '@nestjs/common';
 import { ReviewService } from './review.service';
 import { CreateReviewDto } from './dto/create-review.dto';
+import { AuthGuard } from '@nestjs/passport';
+
 
 @Controller()
 export class ReviewController {
@@ -11,20 +13,28 @@ export class ReviewController {
     return this.reviewService.findAll();
   }
 
-
-  // ✅ สร้างรีวิวให้รายวิชา (mock userId = 1 ก่อน)
-  @Post('course/:courseId/review')
-  create(
-    @Param('courseId') courseId: string,
-    @Body() dto: CreateReviewDto,
-  ) {
-    const userId = 1; // TODO: งานจริงดึงจาก token
-    return this.reviewService.createReview(userId, +courseId, dto);
-  }
-
   // ✅ ดูรีวิวทั้งหมดของรายวิชา
   @Get('course/:courseId/review')
   findByCourse(@Param('courseId') courseId: string) {
     return this.reviewService.findByCourse(+courseId);
   }
+
+  @Get('course/code/:courseCode/reviews')
+  findByCourseCode(@Param('courseCode') courseCode: string) {
+  return this.reviewService.findByCourseCode(courseCode);
+}
+
+
+
+@Post('course/:courseId/review')
+@UseGuards(AuthGuard('jwt'))
+createReviewByCourseId(
+  @Param('courseId') courseId: string,
+  @Body() dto: CreateReviewDto,
+  @Req() req,
+) {
+  return this.reviewService.createByCourseId(+courseId, dto, req.user.id);
+}
+
+
 }

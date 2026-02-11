@@ -32,6 +32,8 @@ export class AuthService {
     const token = await this.jwt.signAsync({
       sub: user.id,
       email: user.email,
+      name: user.name,        // ✅ เพิ่มชื่อ
+      picture: user.picture,
     });
 
     return { token, user };

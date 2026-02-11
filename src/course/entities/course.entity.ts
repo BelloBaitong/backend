@@ -40,5 +40,12 @@ export class Course {
   @OneToMany(() => Review, (review) => review.course)
   reviews: Review[];
 
+  @Column({
+  type: 'vector',
+  nullable: true,
+})
+embedding: number[];
+
+
 }
 
