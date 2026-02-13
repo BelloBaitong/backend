@@ -8,6 +8,7 @@ import { CourseModule } from './course/course.module';
 import { ReviewModule } from './review/review.module';
 import { AuthModule } from './auth/auth.module';
 import { RecommendationModule } from './recommendation/recommendation.module';
+import { ChatModule } from './chat/chat.module';
 
 
 
@@ -35,6 +36,7 @@ import { RecommendationModule } from './recommendation/recommendation.module';
     ReviewModule,
     AuthModule,
     RecommendationModule,
+    ChatModule,
 
   ],
     controllers: [AppController],
