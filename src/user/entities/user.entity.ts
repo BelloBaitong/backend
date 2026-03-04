@@ -1,6 +1,7 @@
-import { Entity, PrimaryGeneratedColumn, Column, OneToMany } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, OneToMany , OneToOne} from 'typeorm';
 import { Exclude } from 'class-transformer';
 import { Review } from '../../review/entities/review.entity';
+import { UserProfile } from './user-profile.entity';
 
 @Entity()
 export class User {
@@ -10,7 +11,7 @@ export class User {
   @Column({ type: 'varchar', length: 30 })
   name: string;
 
-  @Column({ type: 'varchar', length: 15 })
+  @Column({ type: 'varchar', length: 30 })
   username: string;
 
   @Column({ type: 'varchar', length: 40, unique: true })
@@ -41,4 +42,7 @@ export class User {
 
   @Column({ type: 'text', nullable: true })
   picture: string | null;
+
+  @OneToOne(() => UserProfile, (profile) => profile.user, { nullable: true })
+profile?: UserProfile;
 }

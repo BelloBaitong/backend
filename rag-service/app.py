@@ -1,17 +1,18 @@
 import os
-from fastapi import FastAPI
-from pydantic import BaseModel
-from dotenv import load_dotenv
-import psycopg2
+from pydoc import text # ใช้สำหรับอ่าน env variables
+from fastapi import FastAPI   # สร้าง API server ด้วย FastAPI
+from pydantic import BaseModel # สร้าง DTO (Data Transfer Object) สำหรับ request/response validation
+from dotenv import load_dotenv # โหลดค่าจากไฟล์ .env เพื่อไม่ต้อง hardcode config ในโค้ด
+import psycopg2 
 from sentence_transformers import SentenceTransformer
-import ollama
+import ollama  # สำหรับเรียก LLM ที่รันอยู่ใน Ollama (เช่น llama3.1)
+
 
 # โหลดตัวแปรสภาพแวดล้อมจากไฟล์ .env (เช่น DB_HOST, DB_NAME, OLLAMA_MODEL ฯลฯ)
-# เพื่อไม่ hardcode config ในโค้ด
 load_dotenv()
+app = FastAPI() # สร้าง FastAPI application instance ที่เราจะใช้ในการกำหนด routes ของ API server
 
-# สร้าง FastAPI application instance
-app = FastAPI()
+
 
 # ===== ENV =====
 # ชื่อโมเดลที่ใช้กับ Ollama (LLM สำหรับ generate คำตอบ)
@@ -19,20 +20,22 @@ app = FastAPI()
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 
 # ค่าการเชื่อมต่อ PostgreSQL
-DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_HOST = os.getenv("DB_HOST", "localhost") # default เป็น localhost ถ้าไม่ตั้งใน env
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME")  # ชื่อฐานข้อมูล (จำเป็น)
 DB_USER = os.getenv("DB_USER")  # username (จำเป็น)
 DB_PASS = os.getenv("DB_PASS")  # password (จำเป็น)
 
-# ชื่อตารางที่เก็บคอร์ส (ทำให้ปรับเปลี่ยนตารางได้ผ่าน env)
+# ชื่อตารางที่เก็บคอร์ส (ทำให้ปรับเปลี่ยนหรือเพิ่มข้อมูลตารางได้ผ่าน env)
 # default คือ "course"
 COURSE_TABLE = os.getenv("COURSE_TABLE", "course")  # table name in DB
+
 
 # ===== MODELS =====
 # โหลดโมเดล embedding จาก sentence-transformers
 # BAAI/bge-m3 ให้ vector dimension = 1024 (สอดคล้องกับ vector(1024) ใน pgvector)
 embedder = SentenceTransformer("BAAI/bge-m3")  # dim 1024
+
 
 def get_conn():
     """
@@ -57,19 +60,19 @@ def get_conn():
 class OllamaTestRequest(BaseModel):
     text: str
 
-# DTO สำหรับ endpoint ที่ฝัง embedding ให้ “วิชาเดียว” (ระบุด้วย courseCode)
+# DTO สำหรับ endpoint ที่ฝัง embedding ให้ "วิชาเดียว" (ระบุด้วย courseCode)
 class EmbedOneCourseRequest(BaseModel):
     courseCode: str
 
-# ===== HELPERS =====
+# ====เตรียมรายวิชาหลายฟิลด์ให้รวมเป็นข้อความเดียว เพื่อส่งเข้า embedding model====
 def build_course_text(course_code, name_th, name_en, desc, category, credits):
     """
     รวมข้อมูลวิชาให้เป็นข้อความเดียว (text) เพื่อส่งเข้า embedder
     แนวคิด: embedding ควรถอดความหมายจากชื่อวิชา/คำอธิบาย/หมวด/หน่วยกิต/รหัสวิชา
-    เพื่อให้ vector search หา “ความคล้าย” ได้ดีขึ้น
+    เพื่อให้ vector search หา "ความคล้าย" ได้ดีขึ้น
     """
-    parts = []
-    # ใส่เฉพาะ field ที่มีค่า (กัน None / empty)
+    parts = [] # list เก็บแต่ละส่วนของข้อมูลวิชา
+    # if เพื่อ ใส่เฉพาะฟิลด์ ที่มีค่า (กัน None / empty)
     if name_th:
         parts.append(f"ชื่อวิชา: {name_th}")
     if name_en:
@@ -77,16 +80,12 @@ def build_course_text(course_code, name_th, name_en, desc, category, credits):
     if desc:
         parts.append(f"คำอธิบาย: {desc}")
     if category:
-        parts.append(f"หมวด: {category}")
-    # credits อาจเป็น 0 หรือ int ได้ จึงเช็ค is not None
+        parts.append(f"หมวด: {category}") #append คือการเพิ่ม string เข้าไปใน list parts
     if credits is not None:
-        parts.append(f"หน่วยกิต: {credits}")
+        parts.append(f"หน่วยกิต: {credits}") 
+        parts.append(f"รหัสวิชา: {course_code}")
 
-    # ใส่รหัสวิชาท้ายสุดเสมอ (ช่วยให้ query ที่อ้างรหัสวิชาตรง ๆ ทำงานได้)
-    parts.append(f"รหัสวิชา: {course_code}")
-
-    # join เป็น multi-line text
-    return "\n".join(parts)
+    return "\n".join(parts)  # รวมแต่ละส่วนเป็นข้อความเดียว โดยคั่นด้วย newline  newline ช่วยให้ embedding แยกแยะส่วนต่าง ๆ ได้ดีขึ้น) 
 
 # ===== ROUTES =====
 @app.get("/health")
@@ -122,10 +121,10 @@ def ollama_test(req: OllamaTestRequest):
     # คืนข้อความคำตอบออกไป
     return {"reply": resp["message"]["content"]}
 
-@app.post("/courses/embed-one")
-def embed_one_course(req: EmbedOneCourseRequest):
+@app.post("/courses/embed-one") # endpoint สำหรับฝัง embedding ให้กับคอร์สเดียว (ระบุด้วย courseCode)
+def embed_one_course(req: EmbedOneCourseRequest): # รับ request ที่มี courseCode เพื่อระบุว่าคอร์สไหนที่เราจะฝัง embedding
     """
-    ฝัง embedding ให้กับคอร์ส “1 วิชา” ตาม courseCode
+    ฝัง embedding ให้กับคอร์ส "1 วิชา" ตาม courseCode
     ขั้นตอน:
     1) SELECT ดึงข้อมูลวิชาจาก DB (courseCode, ชื่อ, คำอธิบาย ฯลฯ)
     2) build_course_text() รวมเป็นข้อความ
@@ -143,20 +142,21 @@ def embed_one_course(req: EmbedOneCourseRequest):
     """
 
     # UPDATE embedding ของคอร์สที่ระบุ
+    # รับค่า vector เป็น string แล้วแปลงเป็น vector ใน SQL
     # %s::vector คือ cast จาก string representation เป็นชนิด vector ของ pgvector
     sql_update = f"""
         UPDATE {COURSE_TABLE}
-        SET embedding = %s::vector
+        SET embedding = %s::vector 
         WHERE "courseCode" = %s;
     """
 
-    # เปิด connection (context manager) เพื่อให้ปิดเองเมื่อจบ block
-    with get_conn() as conn:
-        # เปิด cursor เพื่อ execute SQL
-        with conn.cursor() as cur:
+    
+    with get_conn() as conn: #เปิด connection ไปยัง PostgreSQL database โดยใช้ฟังก์ชัน get_conn() ที่เราเขียนไว้ข้างต้น ซึ่งจะอ่านค่าการเชื่อมต่อจาก env variables และสร้าง connection object ให้เราใช้งานได้
+        # เปิด cursor เพื่อ execute SQL exceute() ใช้สำหรับรันคำสั่ง SQL ต่าง ๆ กับฐานข้อมูล
+        with conn.cursor() as cur: 
             # 1) ดึงข้อมูลวิชา
             cur.execute(sql_select, (req.courseCode,))
-            row = cur.fetchone() #
+            row = cur.fetchone() # fetchone() ดึงผลลัพธ์ของ SQL query ซึ่งจะเป็น tuple ที่มีค่าตามคอลัมน์ที่เราเลือกใน sql_select (courseCode, courseNameTh, courseNameEn, description, category, credits) หรือ None ถ้าไม่เจอวิชาที่ระบุด้วย courseCode
 
             # ถ้าไม่เจอวิชา -> คืน ok False
             if not row:
@@ -165,14 +165,27 @@ def embed_one_course(req: EmbedOneCourseRequest):
             # แตก tuple เป็นตัวแปรที่อ่านง่าย
             course_code, name_th, name_en, desc, category, credits = row
 
+            print("row:", row)
+            print("row type:", type(row))
+
             # 2) รวมข้อมูลวิชาให้เป็นข้อความเดียว
             text = build_course_text(course_code, name_th, name_en, desc, category, credits)
+            print("TEXT:\n", text)
+            print("TEXT_LEN:", len(text))
+            print("Text type:", type(text))
 
             # 3) ทำ embedding: ได้ list[float] ยาว 1024
             vec = embedder.encode(text).tolist()
+            print("VEC_DIM:", len(vec))
+            print("VEC_HEAD:", vec[:5])
+            print("VEC_TAIL:", vec[-5:])
+            print("vec type:", type(vec), flush=True)
+            print("vec element type:", type(vec[0]), flush=True)
 
             # แปลงเป็นรูปแบบ string ที่ pgvector รับได้ เช่น "[0.1, -0.2, ...]"
             vec_str = "[" + ", ".join(map(str, vec)) + "]"
+            print("VEC_STR_PREVIEW:", vec_str[:120], "...")
+            print("vec_str type:", type(vec_str), flush=True)
 
             # 4) UPDATE ลง DB
             cur.execute(sql_update, (vec_str, course_code))
@@ -192,7 +205,7 @@ class EmbedMissingRequest(BaseModel):
 def embed_missing(req: EmbedMissingRequest):
     """
     ฝัง embedding ให้กับคอร์สที่ embedding ยังเป็น NULL (ทำทีละ limit)
-    ใช้สำหรับ “เติมของค้าง” หรือ initial embedding ทั้งตารางแบบค่อย ๆ ทำ
+    ใช้สำหรับ "เติมของค้าง" หรือ initial embedding ทั้งตารางแบบค่อย ๆ ทำ
     """
 
     # SELECT เฉพาะคอร์สที่ embedding IS NULL (ยังไม่เคยฝัง)
@@ -247,12 +260,13 @@ def embed_missing(req: EmbedMissingRequest):
 
     return {"ok": True, "updated": updated, "failed": failed}
 
-# DTO สำหรับ RAG endpoint
-class RagRequest(BaseModel):
-    queryText: str
-    topK: int = 3
 
-def query_courses_by_vector(qvec, k: int):
+# DTO สำหรับ RAG endpoint request/response ต้องมี field อะไร ชนิดอะไร เวลาเรียก API ต้องส่งข้อมูลหน้าตายังไง
+class RagRequest(BaseModel):
+    queryText: str # คำถามจากผู้ใช้ (เช่น "แนะนำวิชาที่เกี่ยวกับ AI หน่อย")
+    topK: int = 3 # จำนวนวิชาที่อยากได้จาก retrieval (default 3)
+
+def query_courses_by_vector(qvec, k: int): # ฟังก์ชันสำหรับค้นหาวิชาที่ใกล้เคียงกับ query vector (qvec) ที่เราฝังไว้ใน DB
     """
     รับ query vector (qvec) แล้วไปค้นหาในตารางด้วย vector similarity
     หลักการ:
@@ -280,12 +294,12 @@ def query_courses_by_vector(qvec, k: int):
         LIMIT %s;
     """
 
-    # query DB เพื่อดึง top-k ที่ใกล้ที่สุด
+# query DB เพื่อดึง top-k ที่ใกล้ที่สุด
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (qvec_str, k))
             rows = cur.fetchall()
-
+    print("rows:", rows)
     # แปลงผลลัพธ์เป็น list[dict] ส่งออกเป็น sources
     sources = []
     for r in rows:
@@ -299,26 +313,87 @@ def query_courses_by_vector(qvec, k: int):
             "imageUrl": r[6],
             "distance": float(r[7]),  # cast เป็น float เพื่อ JSON serialize ง่าย
         })
+        print("sources:", sources)
     return sources
+    
+
+def check_if_course_related_query(query_text: str) -> bool:
+    """
+    ตรวจสอบว่าคำถามเกี่ยวข้องกับการถามเรื่องรายวิชาหรือไม่
+    ใช้ LLM ช่วยตัดสินใจว่าควรค้นหาวิชาหรือแค่ทักทายธรรมดา
+    คืนค่า True ถ้าถามเกี่ยวกับวิชา, False ถ้าเป็นแค่ทักทายหรือไม่เกี่ยวกับวิชา
+    """
+    classification_prompt = f"""วิเคราะห์คำถามต่อไปนี้ว่าเป็นการถามเกี่ยวกับ "รายวิชา" หรือไม่:
+
+คำถาม: "{query_text}"
+
+ตอบเพียง "YES" ถ้าคำถามต้องการข้อมูลเกี่ยวกับรายวิชา/คอร์สเรียน/หลักสูตร
+ตอบเพียง "NO" ถ้าเป็นเพียงการทักทาย/สนทนาทั่วไป/ไม่เกี่ยวกับรายวิชา
+
+ตัวอย่าง:
+- "สวัสดีค่ะ" -> NO
+- "ขอบคุณค่ะ" -> NO  
+- "วิชาอะไรดี" -> YES
+- "แนะนำวิชาเกี่ยวกับ AI" -> YES
+- "รหัสวิชา 05506216 คืออะไร" -> YES
+- "มีวิชาเกี่ยวกับการเขียนโปรแกรมไหม" -> YES
+
+ตอบ:"""
+
+    resp = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": "You are a query classifier. Answer only YES or NO."},
+            {"role": "user", "content": classification_prompt},
+        ],
+    )
+    
+    answer = resp["message"]["content"].strip().upper()
+    return "YES" in answer
 
 @app.post("/rag/answer")
 def rag_answer(req: RagRequest):
     """
     RAG หลัก:
+    0) ตรวจสอบก่อนว่าคำถามเกี่ยวกับรายวิชาหรือไม่
     1) เอา queryText -> ทำ embedding (qvec)
     2) เอา qvec ไปค้นหา courses ที่ใกล้ที่สุด (sources)
     3) สร้าง CONTEXT จาก sources
-    4) ส่ง prompt + context เข้า Ollama ให้ช่วย “เขียนคำตอบ”
+    4) ส่ง prompt + context เข้า Ollama ให้ช่วย "เขียนคำตอบ"
     5) คืน {answer, sources} กลับไปให้ Nest/Frontend
     """
 
+    # 0) ตรวจสอบว่าคำถามเกี่ยวกับวิชาหรือไม่
+    is_course_query = check_if_course_related_query(req.queryText)
+    
+    # ถ้าไม่เกี่ยวกับวิชา (เช่น แค่ทักทาย) ให้ตอบกลับแบบสนทนาธรรมดาโดยไม่ค้นหาวิชา
+    if not is_course_query:
+        simple_prompt = f"""คุณคือผู้ช่วยแนะนำรายวิชาในมหาวิทยาลัย
+ผู้ใช้ได้ส่งข้อความมาว่า: "{req.queryText}"
+
+ตอบกลับอย่างเป็นมิตรและสุภาพ พร้อมบอกว่าคุณพร้อมช่วยแนะนำรายวิชาถ้าต้องการ
+ตอบเป็นภาษาไทย กระชับ ไม่ต้องยาว"""
+
+        resp = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a friendly course advisor assistant."},
+                {"role": "user", "content": simple_prompt},
+            ],
+        )
+        
+        answer = resp["message"]["content"]
+        # คืนคำตอบโดยไม่มี sources (เพราะไม่ได้ค้นหาวิชา)
+        return {"answer": answer, "sources": []}
+
+    # ถ้าเกี่ยวกับวิชา ให้ทำ RAG ตามปกติ
     # 1) ฝัง embedding ของคำถามผู้ใช้
     qvec = embedder.encode(req.queryText).tolist()
 
     # 2) retrieval: หา topK วิชาที่ใกล้ที่สุดตาม vector distance
     sources = query_courses_by_vector(qvec, req.topK)
 
-    # 3) สร้าง context string ให้ LLM เห็นข้อมูลวิชาที่ดึงมา
+    # 3) สร้าง context string ให้ LLM อ่านข้อมูลวิชาที่ดึงมา
     # ทำรูปแบบเป็น [1], [2], ... เพื่ออ้างอิงได้
     context = "\n\n".join([
         f"[{i+1}] {s['courseNameTh']} ({s['courseCode']})\n"
@@ -327,6 +402,7 @@ def rag_answer(req: RagRequest):
         f"Category: {s['category']} | Credits: {s['credits']}"
         for i, s in enumerate(sources)
     ])
+    print("CONTEXT:\n", context) #ได้เป็นวิชาที่ใกล้เคียงกับคำถามผู้ใช้ พร้อมรายละเอียดที่ LLM จะใช้ในการเขียนคำตอบ
 
     # 4) prompt สำหรับ LLM:
     # - กำหนดบทบาท: ผู้ช่วยแนะนำรายวิชา
@@ -339,14 +415,14 @@ def rag_answer(req: RagRequest):
         f"QUESTION: {req.queryText}\n\n"
         "ขอผลลัพธ์เป็นภาษาไทย กระชับ และมี 2 ส่วน:\n"
         "1) answer: สรุปคำแนะนำ 3-6 บรรทัด\n"
-        "2) recommendations: bullet list วิชาที่แนะนำพร้อมเหตุผลสั้นๆ\n"
+        "2) recommendations: bullet list วิชาที่แนะนำพร้อมเหตุผล\n"
     )
 
     # 5) เรียก Ollama chat เพื่อให้ LLM สรุป + เขียนคำตอบตาม context
     resp = ollama.chat(
         model=OLLAMA_MODEL,
         messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "system", "content": "You are a friendly course advisor assistant."},
             {"role": "user", "content": prompt},
         ],
     )

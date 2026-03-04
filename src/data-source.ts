@@ -13,6 +13,8 @@ import { Course } from './course/entities/course.entity';
 import { ChatSession } from './chat/entities/chat-session.entity';
 import { ChatMessage } from './chat/entities/chat-message.entity';
 
+import { UserProfile } from './user/entities/user-profile.entity';
+
 function mustEnv(name: string) {
   const v = process.env[name];
   if (v === undefined || v === null || v === '') {
@@ -35,8 +37,7 @@ export const AppDataSource = new DataSource({
   synchronize: false,
 
   // ✅ ให้ TypeORM CLI เห็น entities ทั้งหมด
-  entities: [User, Review, Course, ChatSession, ChatMessage],
-
+entities: [User, UserProfile, Review, Course, ChatSession, ChatMessage],
   // ✅ path สำหรับไฟล์ migration
   migrations: ['src/migrations/*.ts'],
 });

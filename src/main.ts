@@ -9,10 +9,11 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
 app.enableCors({
-    origin: 'http://localhost:3000', // port ของ Next.js
-    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-    credentials: true,
-  });
+  origin: ['http://localhost:3000'], // หรือเพิ่ม 'http://127.0.0.1:3000' ถ้าใช้
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false, // ใช้ Bearer token ไม่ต้องใช้ cookie ก็ปิดได้ ลดปัญหา
+});
 
   // 🔐 เปิด ValidationPipe (งานจริงควรมี)
   app.useGlobalPipes(
