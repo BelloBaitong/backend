@@ -1,12 +1,11 @@
 import os
 from pydoc import text # ใช้สำหรับอ่าน env variables
-from fastapi import FastAPI   # สร้าง API server ด้วย FastAPI
+from fastapi import FastAPI ,HTTPException, Header   # สร้าง API server ด้วย FastAPI
 from pydantic import BaseModel # สร้าง DTO (Data Transfer Object) สำหรับ request/response validation
 from dotenv import load_dotenv # โหลดค่าจากไฟล์ .env เพื่อไม่ต้อง hardcode config ในโค้ด
 import psycopg2 
 from sentence_transformers import SentenceTransformer
 import ollama  # สำหรับเรียก LLM ที่รันอยู่ใน Ollama (เช่น llama3.1)
-
 
 # โหลดตัวแปรสภาพแวดล้อมจากไฟล์ .env (เช่น DB_HOST, DB_NAME, OLLAMA_MODEL ฯลฯ)
 load_dotenv()
@@ -29,7 +28,8 @@ DB_PASS = os.getenv("DB_PASS")  # password (จำเป็น)
 # ชื่อตารางที่เก็บคอร์ส (ทำให้ปรับเปลี่ยนหรือเพิ่มข้อมูลตารางได้ผ่าน env)
 # default คือ "course"
 COURSE_TABLE = os.getenv("COURSE_TABLE", "course")  # table name in DB
-
+USER_PROFILE_TABLE = os.getenv("USER_PROFILE_TABLE", "user_profile") # ชื่อตาราง user_profile ใน DB (สำหรับฝัง embedding โปรไฟล์ผู้ใช้)
+REVIEW_TABLE = os.getenv("REVIEW_TABLE", "review")
 
 # ===== MODELS =====
 # โหลดโมเดล embedding จาก sentence-transformers
@@ -86,6 +86,213 @@ def build_course_text(course_code, name_th, name_en, desc, category, credits):
         parts.append(f"รหัสวิชา: {course_code}")
 
     return "\n".join(parts)  # รวมแต่ละส่วนเป็นข้อความเดียว โดยคั่นด้วย newline  newline ช่วยให้ embedding แยกแยะส่วนต่าง ๆ ได้ดีขึ้น) 
+
+def build_profile_text(study_year, interests, career_goals):
+
+    parts = []
+
+    if study_year:
+        parts.append(f"ชั้นปี: {study_year}")
+
+    if interests:
+        parts.append(f"ความสนใจ: {', '.join(interests or [])}")
+
+    if career_goals:
+        parts.append(f"เป้าหมายอาชีพ: {', '.join(career_goals or [])}")
+
+    return "\n".join(parts)
+
+
+class EmbedOneProfileRequest(BaseModel):
+    userId: int
+
+
+@app.post("/profiles/embed-one")
+def embed_one_profile(req: EmbedOneProfileRequest):
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+        SELECT id, "studyYear", interests, "careerGoals"
+        FROM {USER_PROFILE_TABLE}
+        WHERE id = %s
+    """, (req.userId,))
+
+    row = cur.fetchone()
+
+    if not row:
+        cur.close()
+        conn.close()
+        return {"ok": False, "error": "profile not found"}
+
+    user_id, study_year, interests, career_goals = row
+
+    text = build_profile_text(study_year, interests, career_goals)
+
+    vec = embedder.encode(text).tolist()
+
+    cur.execute(f"""
+        UPDATE {USER_PROFILE_TABLE}
+        SET embedding = %s
+        WHERE id = %s
+    """, (vec, user_id))
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return {"ok": True, "userId": user_id, "dim": len(vec)}
+
+
+class EmbedMissingProfilesRequest(BaseModel):
+    limit: int = 200
+
+
+@app.post("/profiles/embed-missing")
+def embed_missing_profiles(req: EmbedMissingProfilesRequest):
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+        SELECT id, "studyYear", interests, "careerGoals"
+        FROM {USER_PROFILE_TABLE}
+        WHERE embedding IS NULL
+        LIMIT %s
+    """, (req.limit,))
+
+    rows = cur.fetchall()
+
+    if not rows:
+        cur.close()
+        conn.close()
+        return {"ok": True, "updated": 0}
+
+    updated = 0
+
+    for user_id, study_year, interests, career_goals in rows:
+
+        text = build_profile_text(study_year, interests, career_goals)
+
+        vec = embedder.encode(text).tolist()
+
+        cur.execute(f"""
+            UPDATE {USER_PROFILE_TABLE}
+            SET embedding = %s
+            WHERE id = %s
+        """, (vec, user_id))
+
+        updated += 1
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return {"ok": True, "updated": updated}
+
+class RecommendRequest(BaseModel):
+    userId: int
+    limit: int = 10
+
+
+@app.post("/courses/recommend")
+def recommend_courses(req: RecommendRequest):
+    """
+    Hybrid recommendation:
+    1) ใช้ user_profile.embedding เป็นหลัก
+    2) ถ้า embedding ไม่มี -> สร้างจาก profile ล่าสุดแล้ว save
+    3) เอา embedding นี้ไปค้น course.embedding
+    """
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # 1) ดึง profile ของ user คนนี้
+    cur.execute(f"""
+        SELECT id, "studyYear", interests, "careerGoals", embedding
+        FROM {USER_PROFILE_TABLE}
+        WHERE "userId" = %s
+        LIMIT 1
+    """, (req.userId,))
+
+    row = cur.fetchone()
+
+    if not row:
+        cur.close()
+        conn.close()
+        return {"ok": False, "error": "user profile not found"}
+
+    profile_id, study_year, interests, career_goals, profile_embedding = row
+
+    # 2) ถ้า embedding ไม่มี -> สร้างใหม่จาก profile ล่าสุด แล้ว save
+    if profile_embedding is None:
+        profile_text = build_profile_text(study_year, interests, career_goals)
+
+        if not profile_text.strip():
+            cur.close()
+            conn.close()
+            return {"ok": False, "error": "user profile is empty"}
+
+        vec = embedder.encode(profile_text).tolist()
+        vec_str = "[" + ", ".join(map(str, vec)) + "]"
+
+        cur.execute(f"""
+            UPDATE {USER_PROFILE_TABLE}
+            SET embedding = %s::vector
+            WHERE id = %s
+        """, (vec_str, profile_id))
+
+        conn.commit()
+        profile_embedding = vec_str
+    else:
+        # ถ้ามี embedding อยู่แล้ว ใช้ได้เลย
+        profile_text = build_profile_text(study_year, interests, career_goals)
+
+    # 3) ค้นหา course ที่ใกล้ที่สุดจาก course.embedding
+    cur.execute(f"""
+        SELECT
+            "courseCode",
+            "courseNameTh",
+            "courseNameEn",
+            description,
+            credits,
+            category,
+            "imageUrl",
+            embedding <-> %s::vector AS distance
+        FROM {COURSE_TABLE}
+        WHERE embedding IS NOT NULL
+        ORDER BY distance ASC
+        LIMIT %s
+    """, (profile_embedding, req.limit))
+
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    courses = []
+    for courseCode, courseNameTh, courseNameEn, description, credits, category, imageUrl, distance in rows:
+        courses.append({
+            "courseCode": courseCode,
+            "courseNameTh": courseNameTh,
+            "courseNameEn": courseNameEn,
+            "description": description,
+            "credits": credits,
+            "category": category,
+            "imageUrl": imageUrl,
+            "distance": float(distance),
+        })
+
+    return {
+        "ok": True,
+        "userId": req.userId,
+        "profileText": profile_text,
+        "count": len(courses),
+        "courses": courses,
+    }
 
 # ===== ROUTES =====
 @app.get("/health")
@@ -432,3 +639,126 @@ def rag_answer(req: RagRequest):
 
     # คืนทั้ง answer และ sources (เพื่อให้ frontend แสดงรายการอ้างอิงได้)
     return {"answer": answer, "sources": sources}
+
+
+class CourseSummaryRequest(BaseModel):
+    courseId: int
+    maxReviews: int = 20
+
+def fetch_course_and_reviews_by_code(course_code: str, max_reviews: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # 1) ดึงรายละเอียดวิชา
+            cur.execute(f"""
+                SELECT
+                  c.id,
+                  c."courseCode",
+                  c."courseNameTh",
+                  c."courseNameEn",
+                  c.description,
+                  c.category,
+                  c.credits
+                FROM {COURSE_TABLE} c
+                WHERE c."courseCode" = %s
+                LIMIT 1
+            """, (course_code,))
+            course = cur.fetchone()
+
+            if not course:
+                return None, []
+
+            course_id = course[0]
+
+            # 2) ดึงรีวิว โดยอิง FK "courseId" (ตาม TypeORM)
+            cur.execute(f"""
+                SELECT
+                  r.rating,
+                  r.comment,
+                  r."isAnonymous",
+                  r."createdAt"
+                FROM {REVIEW_TABLE} r
+                WHERE r."courseId" = %s
+                ORDER BY r."createdAt" DESC
+                LIMIT %s
+            """, (course_id, max_reviews))
+
+            reviews = cur.fetchall()
+
+    return course, reviews
+
+
+@app.post("/courses/summary")
+def summarize_course(req: CourseSummaryRequest):
+    course, reviews = fetch_course_and_reviews_by_code(req.courseCode, req.maxReviews)
+
+    if not course:
+        raise HTTPException(status_code=404, detail="course not found")
+
+    # ถ้าไม่มีรีวิว -> ส่งสถานะข้อมูลไม่พอ (ให้กล่องขึ้นข้อความตาม requirement)
+    if not reviews or len(reviews) == 0:
+        return {
+            "ok": True,
+            "courseCode": req.courseCode,
+            "status": "INSUFFICIENT_DATA",
+            "summary": None,
+        }
+
+    _, course_code, name_th, name_en, desc, category, credits = course
+
+    review_text_lines = []
+    for rating, comment, is_anon, created_at in reviews:
+        if not comment:
+            continue
+        review_text_lines.append(f"- rating: {rating} | comment: {comment}")
+
+    # ถ้าทุกอัน comment ว่างหมด ก็ถือว่าข้อมูลไม่พอ
+    if len(review_text_lines) == 0:
+        return {
+            "ok": True,
+            "courseCode": req.courseCode,
+            "status": "INSUFFICIENT_DATA",
+            "summary": None,
+        }
+
+    review_text = "\n".join(review_text_lines)
+
+    prompt = f"""
+คุณคือผู้ช่วยสรุปรายวิชาสำหรับนักศึกษา (ภาษาไทย)
+สรุปโดยอิงจาก "รายละเอียดรายวิชา" และ "รีวิว" เท่านั้น ห้ามเดาเกินข้อมูล
+
+รายละเอียดรายวิชา:
+- รหัส: {course_code}
+- ชื่อไทย: {name_th}
+- ชื่ออังกฤษ: {name_en}
+- หมวด: {category}
+- หน่วยกิต: {credits}
+- คำอธิบาย: {desc}
+
+รีวิวจากผู้เรียน:
+{review_text}
+
+ให้สรุปเป็นข้อความสั้น 4-7 บรรทัด ครอบคลุม:
+1) ภาพรวมวิชาเรียนอะไร
+2) จุดเด่น/ข้อควรระวัง (ตามรีวิว)
+3) เหมาะกับใคร
+4) ความยาก/งานหนัก (ถ้ามีข้อมูล)
+
+ตอบเป็นภาษาไทยเท่านั้น ไม่ต้องใส่หัวข้อ
+""".strip()
+
+    resp = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": "Summarize strictly from provided data. No hallucinations."},
+            {"role": "user", "content": prompt},
+        ],
+    )
+
+    summary = resp["message"]["content"].strip()
+
+    return {
+        "ok": True,
+        "courseCode": req.courseCode,
+        "status": "OK",
+        "summary": summary,
+    }

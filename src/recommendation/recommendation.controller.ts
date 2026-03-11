@@ -1,4 +1,4 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { RecommendationService } from './recommendation.service';
 import { RagRequestDto } from './dto/rag-request.dto';
 import { EmbedMissingDto, EmbedOneDto } from './dto/embed.dto';
@@ -25,4 +25,16 @@ export class RecommendationController {
   async embedMissing(@Body() dto: EmbedMissingDto) {
     return this.svc.embedMissing(dto.limit ?? 50);
   }
+
+@UseGuards(AuthGuard('jwt')) // ตรวจสอบ JWT token
+  @Post('courses')
+  async recommendCourses(@Req() req: any, @Body() body: { limit?: number }) {
+    const authHeader = req.headers?.authorization ?? ''; // ดึง Authorization token
+    const userId = req.user.id; // ดึง userId จาก JWT token ที่มาจาก `AuthGuard`
+    const limit = body.limit ?? 10; // ใช้ limit จาก body หรือค่า default
+
+    return this.svc.recommendCourses(userId, limit, authHeader); // ส่งไปที่ service
+  }
+
 }
+

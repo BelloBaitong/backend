@@ -24,14 +24,38 @@ export class UserProfileService {
         studyYear: dto.studyYear ?? null,
         interests: dto.interests ?? [],
         careerGoals: dto.careerGoals ?? [],
+        embedding: null, // ✅ โปรไฟล์ใหม่ยังไม่มี embedding
       });
+
       return this.repo.save(created);
     }
 
-    // update เฉพาะที่ส่งมา
-    if (dto.studyYear !== undefined) existing.studyYear = dto.studyYear;
-    if (dto.interests !== undefined) existing.interests = dto.interests;
-    if (dto.careerGoals !== undefined) existing.careerGoals = dto.careerGoals;
+    let shouldResetEmbedding = false;
+
+    if (dto.studyYear !== undefined && dto.studyYear !== existing.studyYear) {
+      existing.studyYear = dto.studyYear;
+      shouldResetEmbedding = true;
+    }
+
+    if (
+      dto.interests !== undefined &&
+      JSON.stringify(dto.interests) !== JSON.stringify(existing.interests)
+    ) {
+      existing.interests = dto.interests;
+      shouldResetEmbedding = true;
+    }
+
+    if (
+      dto.careerGoals !== undefined &&
+      JSON.stringify(dto.careerGoals) !== JSON.stringify(existing.careerGoals)
+    ) {
+      existing.careerGoals = dto.careerGoals;
+      shouldResetEmbedding = true;
+    }
+
+    if (shouldResetEmbedding) {
+      existing.embedding = null; // ✅ เปลี่ยนข้อมูลเมื่อไร ให้ embedding เก่าหมดอายุ
+    }
 
     return this.repo.save(existing);
   }

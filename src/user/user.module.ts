@@ -6,9 +6,11 @@ import { UserProfile } from './entities/user-profile.entity';
 import { UserService } from './user.service';
 import { UserController } from './user.controller';
 import { UserProfileService } from './user-profile.service';
+import { HttpModule } from '@nestjs/axios';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, UserProfile])],
+  imports: [TypeOrmModule.forFeature([User, UserProfile]) 
+  , HttpModule], // ✅ เพิ่ม HttpModule เพื่อให้ UserProfileService ใช้ HttpService ได้
   controllers: [UserController],
   providers: [UserService,UserProfileService],
   exports: [UserService,UserProfileService], // ✅ สำคัญ: ให้ module อื่น (AuthModule) ใช้ UserService และ UserProfileService ได้

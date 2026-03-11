@@ -2,10 +2,11 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, Query,ParseIntPipe }
 import { CourseService } from './course.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
+import { CourseAiService } from './course-ai.service';
 
 @Controller('course')
 export class CourseController {
-  constructor(private readonly courseService: CourseService) {}
+  constructor(private readonly courseService: CourseService, private readonly courseAi: CourseAiService) {}
 
   @Post()
   create(@Body() dto: CreateCourseDto) {
@@ -58,4 +59,10 @@ findOne(@Param('id', ParseIntPipe) id: number) {
   remove(@Param('id') id: string) {
     return this.courseService.remove(+id);
   }
+
+  @Get(':courseCode/ai-summary')
+  async aiSummary(@Param('courseCode') courseCode: string) {
+    return this.courseAi.getAiSummary(courseCode);
+  }
 }
+

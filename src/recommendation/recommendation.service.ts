@@ -1,5 +1,6 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 
+
 @Injectable()
 export class RecommendationService {
   private readonly ragBaseUrl = process.env.RAG_SERVICE_URL;
@@ -61,4 +62,26 @@ export class RecommendationService {
     return res.json(); // { ok, updated, failed }
   }
 
+  async recommendCourses(userId: number, limit: number, authorization: string) {
+    if (!this.ragBaseUrl) {
+      throw new InternalServerErrorException('RAG_SERVICE_URL is not configured');
+    }
+
+    const res = await fetch(`${this.ragBaseUrl}/courses/recommend`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authorization, // ส่ง JWT token ไปให้ RAG service
+      },
+      body: JSON.stringify({ userId, limit }), // ส่ง userId และ limit ไปใน body
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new InternalServerErrorException(`RAG service error: ${err}`);
+    }
+
+    return res.json(); // คืนผลลัพธ์จาก RAG service
+  }
 }
+

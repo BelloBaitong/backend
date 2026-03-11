@@ -32,9 +32,14 @@ export class UserProfile {
   @Column({ type: 'text', array: true, default: () => 'ARRAY[]::text[]' })
   careerGoals: string[];
 
+  @Column({ type: 'vector', nullable: true })
+  embedding: number[] | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
   @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
+
+
 }
