@@ -529,6 +529,7 @@ def check_if_course_related_query(query_text: str) -> bool:
     ตรวจสอบว่าคำถามเกี่ยวข้องกับการถามเรื่องรายวิชาหรือไม่
     ใช้ LLM ช่วยตัดสินใจว่าควรค้นหาวิชาหรือแค่ทักทายธรรมดา
     คืนค่า True ถ้าถามเกี่ยวกับวิชา, False ถ้าเป็นแค่ทักทายหรือไม่เกี่ยวกับวิชา
+    คำนึงถึงข้อมูลผู้ใช้ (เช่น ความสนใจ) ว่ามีหรือยัง เพื่อช่วยให้ LLM ตัดสินใจได้ดีขึ้น
     """
     classification_prompt = f"""วิเคราะห์คำถามต่อไปนี้ว่าเป็นการถามเกี่ยวกับ "รายวิชา" หรือไม่:
 
@@ -544,6 +545,35 @@ def check_if_course_related_query(query_text: str) -> bool:
 - "แนะนำวิชาเกี่ยวกับ AI" -> YES
 - "รหัสวิชา 05506216 คืออะไร" -> YES
 - "มีวิชาเกี่ยวกับการเขียนโปรแกรมไหม" -> YES
+- "วันนี้อากาศดีนะ" -> NO
+- "คุณช่วยแนะนำวิชาได้ไหม" -> NO  # เพิ่มเงื่อนไขนี้เพื่อให้คำถามนี้ไม่ถูกตีความเป็น YES
+- "มีวิชาไหนที่สอนเกี่ยวกับ Data Science บ้าง" -> YES
+- "วิชาอะไรที่เกี่ยวกับการเขียนโปรแกรม?" -> YES
+- "มีวิชาเกี่ยวกับ Machine Learning ไหม?" -> YES
+- "วิชาเกี่ยวกับปัญญาประดิษฐ์ (AI) ที่เรียนได้ในปีนี้มีอะไรบ้าง?" -> YES
+- "อยากเรียนวิชาที่เกี่ยวข้องกับการพัฒนาซอฟต์แวร์ มีวิชาไหนบ้าง?" -> YES
+- "วิชาการพัฒนาเว็บที่แนะนำมีอะไรบ้าง?" -> YES
+- "วิชาอะไรที่เกี่ยวข้องกับการทำงานด้านการวิเคราะห์ข้อมูล?" -> YES
+- "วิชาเกี่ยวกับ Cloud Computing มีไหม?" -> YES
+- "มีวิชาไหนที่สอนเกี่ยวกับการออกแบบระบบฐานข้อมูล?" -> YES
+- "วันนี้อากาศดีนะ" -> NO
+- "สวัสดีค่ะ, คุณทำอะไรอยู่?" -> NO
+- "อยากไปเที่ยวที่ไหนกันดี?" -> NO
+- "คุณช่วยแนะนำหนังสือดีๆ สำหรับการพัฒนาตัวเองไหม?" -> NO
+- "มีอะไรที่น่าสนใจเกี่ยวกับเทคโนโลยีใหม่ๆ บ้าง?" -> NO
+- "อยากลองทำอะไรใหม่ๆ ในชีวิตบ้าง?" -> NO
+- "อยากไปท่องเที่ยวที่ไหนในไทย?" -> NO
+- "คุณรู้จักอาหารไทยอะไรบ้าง?" -> NO
+- "คุณคิดว่าอาชีพไหนน่าสนใจในอนาคต?" -> NO
+- "ฉันอยากทำงานด้าน Data Science ต้องเรียนวิชาไหนบ้าง?" -> YES
+- "วิชาอะไรที่ช่วยเตรียมตัวให้พร้อมกับการทำงานในสายงาน AI?" -> YES
+- "จะเลือกเรียนวิชาไหนเพื่อเป็นนักพัฒนาโปรแกรม?" -> YES
+- "ถ้าฉันอยากทำงานด้าน Cybersecurity ควรเรียนวิชาอะไร?" -> YES
+- "คุณช่วยแนะนำวิชาให้หน่อยได้ไหม?" -> NO
+- "วิชาไหนดีที่สุดสำหรับปีนี้?" -> NO
+- "ช่วยแนะนำวิชาที่น่าสนใจให้หน่อย" -> NO
+- "วิชาอะไรที่เหมาะกับคนที่สนใจด้านเทคโนโลยี?" -> NO
+- "วิชานี้เรียนยากไหม?" -> NO
 
 ตอบ:"""
 
@@ -557,6 +587,50 @@ def check_if_course_related_query(query_text: str) -> bool:
     
     answer = resp["message"]["content"].strip().upper()
     return "YES" in answer
+
+def fetch_reviews_for_courses(courses):
+    """
+    ดึงรีวิวจากฐานข้อมูลสำหรับแต่ละวิชา โดยใช้ courseId แทน courseCode
+    หากไม่มีรีวิวสำหรับวิชาใด ๆ จะคืนข้อความว่า "วิชานี้ยังไม่มีรีวิว"
+    """
+    course_reviews = {}
+    for course in courses:
+        course_code = course["courseCode"]
+        
+        # ค้นหาจาก courseCode เพื่อหาค่า courseId จากฐานข้อมูล
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT id FROM {COURSE_TABLE} WHERE "courseCode" = %s
+        """, (course_code,))
+        course_id = cur.fetchone()
+        
+        if not course_id:
+            course_reviews[course_code] = "ไม่พบวิชานี้ในฐานข้อมูล"
+            continue
+        
+        course_id = course_id[0]  # ดึงค่า courseId
+        
+        # ค้นหารีวิวจาก courseId
+        cur.execute(f"""
+            SELECT r.rating, r.comment, r."isAnonymous", r."createdAt"
+            FROM {REVIEW_TABLE} r
+            WHERE r."courseId" = %s
+            ORDER BY r."createdAt" DESC
+            LIMIT 5
+        """, (course_id,))
+        
+        reviews = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if reviews:
+            review_text = "\n".join([f"Rating: {r[0]}, Comment: {r[1]}" for r in reviews if r[1] is not None and r[1].strip() != ""])
+        else:
+            review_text = "วิชานี้ยังไม่มีรีวิว"  # ถ้าไม่มีรีวิวให้แสดงข้อความนี้
+
+        course_reviews[course_code] = review_text
+    return course_reviews
 
 @app.post("/rag/answer")
 def rag_answer(req: RagRequest):
@@ -572,6 +646,7 @@ def rag_answer(req: RagRequest):
 
     # 0) ตรวจสอบว่าคำถามเกี่ยวกับวิชาหรือไม่
     is_course_query = check_if_course_related_query(req.queryText)
+    is_career_query = check_if_career_related_query(req.queryText)
     
     # ถ้าไม่เกี่ยวกับวิชา (เช่น แค่ทักทาย) ให้ตอบกลับแบบสนทนาธรรมดาโดยไม่ค้นหาวิชา
     if not is_course_query:
@@ -610,20 +685,32 @@ def rag_answer(req: RagRequest):
         for i, s in enumerate(sources)
     ])
     print("CONTEXT:\n", context) #ได้เป็นวิชาที่ใกล้เคียงกับคำถามผู้ใช้ พร้อมรายละเอียดที่ LLM จะใช้ในการเขียนคำตอบ
+    
+    # 4) ดึงรีวิวจากแต่ละวิชา
+    course_reviews = fetch_reviews_for_courses(sources)
+
+    # เพิ่มรีวิวใน context ที่ส่งให้ Ollama
+    context_with_reviews = ""
+    for i, course in enumerate(sources):
+        course_code = course["courseCode"]
+        review_text = course_reviews[course_code]
+        context_with_reviews += f"\n[{i+1}] {course['courseNameTh']} - {review_text}"
 
     # 4) prompt สำหรับ LLM:
     # - กำหนดบทบาท: ผู้ช่วยแนะนำรายวิชา
-    # - บังคับให้ตอบโดยอิงจาก CONTEXT
-    # - บอก format ที่อยากได้ (ภาษาไทย, กระชับ, 2 ส่วน)
+    # - บังคับให้ตอบโดยอิงจาก CONTEXT ที่มีทั้งวิชาและรีวิว
     prompt = (
-        "คุณคือผู้ช่วยแนะนำรายวิชาในมหาวิทยาลัย\n"
-        "ให้ตอบโดยอิงจากข้อมูลวิชาใน CONTEXT\n\n"
-        f"CONTEXT:\n{context}\n\n"
-        f"QUESTION: {req.queryText}\n\n"
-        "ขอผลลัพธ์เป็นภาษาไทย กระชับ และมี 2 ส่วน:\n"
-        "1) answer: สรุปคำแนะนำ 3-6 บรรทัด\n"
-        "2) recommendations: bullet list วิชาที่แนะนำพร้อมเหตุผล\n"
-    )
+    "คุณคือผู้ช่วยแนะนำรายวิชาในมหาวิทยาลัย\n"
+    "ให้ตอบโดยอิงจากข้อมูลวิชาใน CONTEXT พร้อมเรียบเรียงรีวิวของแต่ละวิชาในลักษณะที่น่าสนใจและกระชับ\n\n"
+    f"CONTEXT:\n{context}\n\n"
+    f"QUESTION: {req.queryText}\n\n"
+    "ขอผลลัพธ์เป็นภาษาไทย กระชับ และมี 3 ส่วน:\n"
+    "1) **คำแนะนำ**: สรุปคำแนะนำวิชา 3-6 บรรทัด โดยพิจารณาความสำคัญของวิชาในด้านต่าง ๆ เช่น ทักษะที่ได้จากวิชานั้น\n"
+    "ใช้ความรู้ทั่วไปเกี่ยวกับวิชานั้น ๆ มาช่วยในการอธิบาย เช่น วิชาการเขียนโปรแกรมเกี่ยวข้องกับการพัฒนาทักษะการคิดเชิงตรรกะ และการสร้างแอปพลิเคชันที่สามารถทำงานได้จริง\n"
+    "2) **วิชาที่แนะนำ**: ให้แนะนำวิชาในรูปแบบของ bullet list โดยอธิบายเหตุผลว่าแต่ละวิชาเหมาะกับใครและทำไม\n"
+    f"CONTEXT WITH REVIEWS:\n{context_with_reviews}\n"  # ส่งแยกส่วนรีวิวเพื่อให้ LLM สรุปรีวิวได้ง่ายขึ้น โดยไม่ต้องไปแยกเองจาก context หลัก
+    "3) **สรุปรีวิวจากนักศึกษา**: สำหรับแต่ละวิชา ให้สรุปรีวิวจากนักศึกษาในลักษณะที่น่าสนใจและกระชับ ถ้าไม่มีรีวิวให้บอกว่า (วิชานี้ยังไม่มีรีวิว)\n"
+)
 
     # 5) เรียก Ollama chat เพื่อให้ LLM สรุป + เขียนคำตอบตาม context
     resp = ollama.chat(
@@ -640,6 +727,185 @@ def rag_answer(req: RagRequest):
     # คืนทั้ง answer และ sources (เพื่อให้ frontend แสดงรายการอ้างอิงได้)
     return {"answer": answer, "sources": sources}
 
+
+def check_if_career_related_query(query_text: str) -> bool:
+    """
+    ตรวจสอบว่าคำถามเกี่ยวข้องกับอาชีพหรือไม่
+    คืนค่า True ถ้าคำถามเกี่ยวข้องกับอาชีพที่นักศึกษาสนใจ
+    คืนค่า False ถ้าคำถามไม่เกี่ยวกับอาชีพ
+    """
+    # ใช้ Ollama หรือวิธีการตรวจสอบคำถามที่เกี่ยวข้องกับอาชีพ
+    career_keywords = ["อาชีพ", "ทำงาน", "อนาคต", "เรียนอะไรดี", "จะเรียนอะไรดี"]
+    
+    # เช็คว่า query_text มีคำที่เกี่ยวข้องกับอาชีพหรือไม่
+    if any(keyword in query_text for keyword in career_keywords):
+        return True
+    return False
+
+def get_user_career_goals(user_id: int):
+    """
+    ดึงข้อมูลอาชีพที่นักศึกษาสนใจจากฐานข้อมูล
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # ดึงข้อมูล careerGoals ของนักศึกษาจากฐานข้อมูล
+    cur.execute(f"""
+        SELECT "careerGoals"
+        FROM {USER_PROFILE_TABLE}
+        WHERE "userId" = %s
+    """, (user_id,))
+    
+    career_goals = cur.fetchone()
+
+    cur.close()
+    conn.close()
+    
+    if career_goals:
+        return career_goals[0]  # คืนค่าของ careerGoals (อาชีพที่นักศึกษาสนใจ)
+    else:
+        return None
+    
+def search_courses_by_skills(skills: list, limit=5):
+    """
+    ค้นหาวิชาที่เกี่ยวข้องกับทักษะจากฐานข้อมูล
+    โดยทักษะที่ได้รับจะถูกแปลงเป็น vector
+    """
+    # รวมทักษะที่ได้จาก careerGoals เป็นข้อความ
+    skills_text = " ".join(skills)
+    
+    # แปลงทักษะเป็น vector
+    skills_vector = embedder.encode(skills_text).tolist()
+
+    # ค้นหาวิชาที่ใกล้เคียงจาก vector
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # ค้นหาวิชาที่มี vector embedding และหาความใกล้เคียง
+    cur.execute(f"""
+        SELECT
+            "courseCode",
+            "courseNameTh",
+            "courseNameEn",
+            description,
+            credits,
+            category,
+            "imageUrl",
+            embedding <-> %s::vector AS distance
+        FROM {COURSE_TABLE}
+        WHERE embedding IS NOT NULL
+        ORDER BY distance ASC
+        LIMIT %s
+    """, (skills_vector, limit))
+
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    courses = []
+    for courseCode, courseNameTh, courseNameEn, description, credits, category, imageUrl, distance in rows:
+        courses.append({
+            "courseCode": courseCode,
+            "courseNameTh": courseNameTh,
+            "courseNameEn": courseNameEn,
+            "description": description,
+            "credits": credits,
+            "category": category,
+            "imageUrl": imageUrl,
+            "distance": float(distance),
+        })
+
+    return courses
+class RagsRequest(BaseModel):
+    queryText: str # คำถามจากผู้ใช้ (เช่น "แนะนำวิชาที่เกี่ยวกับ AI หน่อย")
+    topK: int = 3 # จำนวนวิชาที่อยากได้จาก retrieval (default 3)
+    userId: int # รหัสผู้ใช้ (เพื่อดึง profile + career goals มาใช้ในการแนะนำวิชา)
+
+
+@app.post("/rags/answer-career")
+def rag_answer_career(req: RagsRequest):
+    """
+    ขั้นตอน:
+    1) ถามผู้ใช้ว่าอยากทำอาชีพที่สนใจในอนาคตหรือไม่
+    2) หากตอบ "ใช่" ให้ใช้ข้อมูลที่ได้จาก Ollama เพื่อค้นหาแนวทางการเรียน
+    3) ค้นหาและแนะนำวิชาที่เกี่ยวข้องกับอาชีพในอนาคตจากฐานข้อมูล
+    """
+
+    # 0) ตรวจสอบว่าอาชีพที่นักศึกษาสนใจ (careerGoals) อยู่ในฐานข้อมูลหรือไม่
+    career_goals = get_user_career_goals(req.userId)
+
+    if not career_goals:
+        raise HTTPException(status_code=404, detail="Career goals not found for user")
+
+    # ถาม Ollama ว่าผู้ใช้ต้องการทำอาชีพนี้หรือไม่
+    career_question = f"คุณอยากทำอาชีพ {career_goals} ในอนาคตใช่ไหม?"
+
+    resp = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": "You are a friendly assistant."},
+            {"role": "user", "content": career_question},
+        ]
+    )
+    
+    answer = resp["message"]["content"]
+
+    if "ใช่" in answer:
+        # ถ้าผู้ใช้ตอบ "ใช่", ให้ถาม Ollama ว่าควรเรียนอะไรบ้าง
+        career_query = f"ถ้าฉันต้องการทำอาชีพ {career_goals} ฉันควรเรียนวิชาอะไรบ้างเพื่อเตรียมตัว?"
+        
+        career_resp = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a career advisor."},
+                {"role": "user", "content": career_query},
+            ]
+        )
+        
+        career_advice = career_resp["message"]["content"]
+        
+        print("Career advice from Ollama:", career_advice)
+        # แปลง career_advice ให้เป็น vector
+        career_vector = embedder.encode(career_advice).tolist()
+
+        # ค้นหาวิชาที่เกี่ยวข้องกับอาชีพจาก vector ที่ได้
+        recommended_courses = search_courses_by_skills(career_advice, req.limit)
+        
+        context = "\n".join([
+            f"[{i+1}] {course['courseNameTh']} ({course['courseCode']})\n"
+            f"EN: {course['courseNameEn']}\n"
+            f"Desc: {course['description']}\n"
+            f"Category: {course['category']} | Credits: {course['credits']}"
+            for i, course in enumerate(recommended_courses)
+        ])
+        
+        prompt = (
+            "คุณคือผู้ช่วยแนะนำรายวิชาในมหาวิทยาลัย\n"
+            "ให้ตอบโดยอิงจากข้อมูลวิชาใน CONTEXT\n\n"
+            f"CONTEXT:\n{context}\n\n"
+            f"QUESTION: {req.queryText}\n\n"
+            "ขอผลลัพธ์เป็นภาษาไทย กระชับ และมี 3 ส่วน:\n"
+            "1) **คำแนะนำ**: สรุปคำแนะนำวิชา 3-6 บรรทัด โดยพิจารณาความสำคัญของวิชาในด้านต่าง ๆ เช่น ทักษะที่ได้จากวิชานั้น\n"
+            "2) **วิชาที่แนะนำ**: ให้แนะนำวิชาในรูปแบบของ bullet list โดยอธิบายเหตุผลว่าแต่ละวิชาเหมาะกับใครและทำไม\n"
+            "3) **รีวิวจากนักศึกษา**: สำหรับแต่ละวิชา ให้สรุปรีวิวจากนักศึกษาในลักษณะที่น่าสนใจและกระชับ ถ้าไม่มีรีวิวให้บอกว่า (วิชานี้ยังไม่มีรีวิว)\n"
+        )
+        
+        # ส่งคำถามไปยัง Ollama
+        resp = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a friendly course advisor assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+
+        answer = resp["message"]["content"]
+        
+        return {"answer": answer, "courses": recommended_courses}
+    
+    else:
+        return {"ok": False, "error": "User did not confirm career choice"}
 
 class CourseSummaryRequest(BaseModel):
     courseId: int
@@ -685,6 +951,72 @@ def fetch_course_and_reviews_by_code(course_code: str, max_reviews: int):
             reviews = cur.fetchall()
 
     return course, reviews
+
+class RecommendCoursesRequest(BaseModel):
+    userId: int
+    limit: int = 10
+
+@app.post("/recommendations/courses")
+def recommend_courses(req: RecommendCoursesRequest):
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # ดึง embedding ของ user
+    cur.execute("""
+        SELECT embedding
+        FROM user_profile
+        WHERE id = %s
+    """, (req.userId,))
+
+    row = cur.fetchone()
+
+    if not row or row[0] is None:
+        cur.close()
+        conn.close()
+        return {"ok": False, "error": "user embedding not found"}
+
+    user_embedding = row[0]
+
+    cur.execute(f"""
+        SELECT
+            "courseCode",
+            "courseNameTh",
+            "courseNameEn",
+            description,
+            credits,
+            category,
+            "imageUrl"
+        FROM {COURSE_TABLE}
+        WHERE embedding IS NOT NULL
+        ORDER BY embedding <-> %s
+        LIMIT %s
+    """, (user_embedding, req.limit))
+
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    courses = []
+
+    for courseCode, courseNameTh, courseNameEn, description, credits, category, imageUrl in rows:
+        courses.append({
+            "courseCode": courseCode,
+            "courseNameTh": courseNameTh,
+            "courseNameEn": courseNameEn,
+            "description": description,
+            "credits": credits,
+            "category": category,
+            "imageUrl": imageUrl
+        })
+
+    return {
+        "ok": True,
+        "userId": req.userId,
+        "count": len(courses),
+        "courses": courses
+    }
 
 
 @app.post("/courses/summary")

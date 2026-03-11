@@ -24,6 +24,25 @@ export class RecommendationService {
     return res.json(); // { answer, sources }
   }
 
+  async ragsAnswer(queryText: string, topK: number = 3, userId: number) {
+    if (!this.ragBaseUrl) {
+      throw new InternalServerErrorException('RAG_SERVICE_URL is not configured');
+    }
+
+    const res = await fetch(`${this.ragBaseUrl}/rag/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ queryText, topK, userId }), // เพิ่ม userId เข้ามาใน body
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new InternalServerErrorException(`RAG service error: ${err}`);
+    }
+
+    return res.json(); // { answer, sources }
+  }
+
     async embedOne(courseCode: string) {
     if (!this.ragBaseUrl) {
       throw new InternalServerErrorException('RAG_SERVICE_URL is not configured');

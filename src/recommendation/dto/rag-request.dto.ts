@@ -4,6 +4,9 @@ export class RagRequestDto {
   @IsString()
   queryText: string;
 
+  @IsInt()
+  userId: number;
+
   @IsOptional()
   @IsInt()
   @Min(1)
