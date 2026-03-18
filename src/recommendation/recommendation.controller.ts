@@ -8,17 +8,11 @@ import { AuthGuard } from '@nestjs/passport';
 export class RecommendationController {
   constructor(private readonly svc: RecommendationService) {}
 
-  @UseGuards(AuthGuard('jwt'))
-  @Post('rag')
-  async rag(@Body() dto: RagRequestDto) {
-    return this.svc.ragAnswer(dto.queryText, dto.topK ?? 3);
-  }
-
    @UseGuards(AuthGuard('jwt'))
-  @Post('rags')
-  async rags(@Body() dto: RagRequestDto, @Req() req: any) {
+  @Post('rag')
+  async rag(@Body() dto: RagRequestDto, @Req() req: any) {
     const userId = req.user.id; // ดึง userId จาก JWT token ที่ยืนยันแล้ว
-    return this.svc.ragsAnswer(dto.queryText, dto.topK ?? 3, userId); // ส่ง userId พร้อม queryText
+    return this.svc.ragAnswer(dto.queryText, dto.topK ?? 3, userId); // ส่ง userId พร้อม queryText
   }
 
   // ฝัง embedding ทีละวิชา

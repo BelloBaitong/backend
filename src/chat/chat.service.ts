@@ -109,7 +109,7 @@ export class ChatService {
     const savedUserMsg = await this.messageRepo.save(userMsg);
 
     // 2) call RAG (ผ่าน recommendation service เดิมของคุณ)
-    const rag = await this.recommendationService.ragAnswer(text, topK);
+    const rag = await this.recommendationService. ragAnswer(text, topK, userId); // ส่ง userId ไปด้วย เผื่อ RAG จะใช้ข้อมูลโปรไฟล์ช่วยตอบได้ดีขึ้น
 
     // 3) save assistant message
     const botMsg = this.messageRepo.create({

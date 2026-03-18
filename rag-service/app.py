@@ -472,6 +472,7 @@ def embed_missing(req: EmbedMissingRequest):
 class RagRequest(BaseModel):
     queryText: str # คำถามจากผู้ใช้ (เช่น "แนะนำวิชาที่เกี่ยวกับ AI หน่อย")
     topK: int = 3 # จำนวนวิชาที่อยากได้จาก retrieval (default 3)
+    userId: int | None = None # รหัสผู้ใช้ (เพื่อดึงข้อมูลโปรไฟล์/ความสนใจมาช่วยในการตัดสินใจ)
 
 def query_courses_by_vector(qvec, k: int): # ฟังก์ชันสำหรับค้นหาวิชาที่ใกล้เคียงกับ query vector (qvec) ที่เราฝังไว้ใน DB
     """
@@ -643,10 +644,14 @@ def rag_answer(req: RagRequest):
     4) ส่ง prompt + context เข้า Ollama ให้ช่วย "เขียนคำตอบ"
     5) คืน {answer, sources} กลับไปให้ Nest/Frontend
     """
-
+    
+    is_career_query = check_if_career_related_query(req.queryText)
+    
+    if is_career_query:
+        return rag_answer_career(req)
+    
     # 0) ตรวจสอบว่าคำถามเกี่ยวกับวิชาหรือไม่
     is_course_query = check_if_course_related_query(req.queryText)
-    is_career_query = check_if_career_related_query(req.queryText)
     
     # ถ้าไม่เกี่ยวกับวิชา (เช่น แค่ทักทาย) ให้ตอบกลับแบบสนทนาธรรมดาโดยไม่ค้นหาวิชา
     if not is_course_query:
@@ -735,12 +740,10 @@ def check_if_career_related_query(query_text: str) -> bool:
     คืนค่า False ถ้าคำถามไม่เกี่ยวกับอาชีพ
     """
     # ใช้ Ollama หรือวิธีการตรวจสอบคำถามที่เกี่ยวข้องกับอาชีพ
-    career_keywords = ["อาชีพ", "ทำงาน", "อนาคต", "เรียนอะไรดี", "จะเรียนอะไรดี"]
+    career_keywords = ["อาชีพ", "ทำงาน", "อนาคต","สายงาน","งาน","ทำงานอะไร","อยากเป็น","อยากทำงาน","เรียนอะไรดีเพื่อ","เตรียมตัวทำงาน","สายอาชีพ","แนวทางการเรียน","แนะนำวิชาเพื่ออาชีพ"]
     
-    # เช็คว่า query_text มีคำที่เกี่ยวข้องกับอาชีพหรือไม่
-    if any(keyword in query_text for keyword in career_keywords):
-        return True
-    return False
+    text = query_text.lower()
+    return any(keyword in text for keyword in career_keywords)
 
 def get_user_career_goals(user_id: int):
     """
@@ -766,22 +769,16 @@ def get_user_career_goals(user_id: int):
     else:
         return None
     
-def search_courses_by_skills(skills: list, limit=5):
+def search_courses_by_skills(skills_text: str, limit=5):
     """
-    ค้นหาวิชาที่เกี่ยวข้องกับทักษะจากฐานข้อมูล
-    โดยทักษะที่ได้รับจะถูกแปลงเป็น vector
+    ค้นหาวิชาที่เกี่ยวข้องกับข้อความทักษะ/คำแนะนำอาชีพ
     """
-    # รวมทักษะที่ได้จาก careerGoals เป็นข้อความ
-    skills_text = " ".join(skills)
-    
-    # แปลงทักษะเป็น vector
-    skills_vector = embedder.encode(skills_text).tolist()
+    vec = embedder.encode(skills_text).tolist()
+    vec_str = "[" + ", ".join(map(str, vec)) + "]"
 
-    # ค้นหาวิชาที่ใกล้เคียงจาก vector
     conn = get_conn()
     cur = conn.cursor()
 
-    # ค้นหาวิชาที่มี vector embedding และหาความใกล้เคียง
     cur.execute(f"""
         SELECT
             "courseCode",
@@ -796,7 +793,7 @@ def search_courses_by_skills(skills: list, limit=5):
         WHERE embedding IS NOT NULL
         ORDER BY distance ASC
         LIMIT %s
-    """, (skills_vector, limit))
+    """, (vec_str, limit))
 
     rows = cur.fetchall()
 
@@ -817,96 +814,90 @@ def search_courses_by_skills(skills: list, limit=5):
         })
 
     return courses
-class RagsRequest(BaseModel):
-    queryText: str # คำถามจากผู้ใช้ (เช่น "แนะนำวิชาที่เกี่ยวกับ AI หน่อย")
-    topK: int = 3 # จำนวนวิชาที่อยากได้จาก retrieval (default 3)
-    userId: int # รหัสผู้ใช้ (เพื่อดึง profile + career goals มาใช้ในการแนะนำวิชา)
 
 
-@app.post("/rags/answer-career")
-def rag_answer_career(req: RagsRequest):
+@app.post("/rag/answer-career")
+def rag_answer_career(req: RagRequest):
     """
-    ขั้นตอน:
-    1) ถามผู้ใช้ว่าอยากทำอาชีพที่สนใจในอนาคตหรือไม่
-    2) หากตอบ "ใช่" ให้ใช้ข้อมูลที่ได้จาก Ollama เพื่อค้นหาแนวทางการเรียน
-    3) ค้นหาและแนะนำวิชาที่เกี่ยวข้องกับอาชีพในอนาคตจากฐานข้อมูล
+    แนะนำวิชาตามอาชีพที่ผู้ใช้สนใจ
     """
 
-    # 0) ตรวจสอบว่าอาชีพที่นักศึกษาสนใจ (careerGoals) อยู่ในฐานข้อมูลหรือไม่
+    if not req.userId:
+        raise HTTPException(status_code=400, detail="userId is required")
+
     career_goals = get_user_career_goals(req.userId)
 
     if not career_goals:
         raise HTTPException(status_code=404, detail="Career goals not found for user")
 
-    # ถาม Ollama ว่าผู้ใช้ต้องการทำอาชีพนี้หรือไม่
-    career_question = f"คุณอยากทำอาชีพ {career_goals} ในอนาคตใช่ไหม?"
+    if isinstance(career_goals, list):
+        career_text = ", ".join(career_goals)
+    else:
+        career_text = str(career_goals)
+
+    career_query = f"""
+ผู้ใช้สนใจอาชีพต่อไปนี้: {career_text}
+
+อธิบายสั้น ๆ ว่าถ้าอยากทำอาชีพนี้ควรมีความรู้หรือทักษะอะไรบ้าง
+ตอบเป็นภาษาไทยแบบกระชับ 4-6 บรรทัด
+จากนั้นสรุปเป็น keyword ทักษะที่สำคัญในบรรทัดสุดท้าย โดยขึ้นต้นว่า KEYWORDS:
+""".strip()
+
+    career_resp = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": "You are a career advisor."},
+            {"role": "user", "content": career_query},
+        ]
+    )
+
+    career_advice = career_resp["message"]["content"].strip()
+
+    recommended_courses = search_courses_by_skills(career_advice, req.topK)
+
+    context = "\n\n".join([
+        f"[{i+1}] {course['courseNameTh']} ({course['courseCode']})\n"
+        f"EN: {course['courseNameEn']}\n"
+        f"Desc: {course['description']}\n"
+        f"Category: {course['category']} | Credits: {course['credits']}"
+        for i, course in enumerate(recommended_courses)
+    ])
+
+    prompt = f"""
+คุณคือผู้ช่วยแนะนำรายวิชาในมหาวิทยาลัย
+
+ข้อมูลอาชีพที่ผู้ใช้สนใจ:
+{career_text}
+
+คำอธิบายทักษะ/ความรู้ที่ควรมีสำหรับอาชีพนี้:
+{career_advice}
+
+รายวิชาในหลักสูตรที่ค้นเจอ:
+{context}
+
+คำถามผู้ใช้:
+{req.queryText}
+
+ให้ตอบเป็นภาษาไทย และแบ่งเป็น 2 ส่วนเท่านั้น:
+
+1) ภาพรวมอาชีพ
+อธิบายสั้น ๆ ว่าถ้าอยากทำอาชีพนี้ควรมีพื้นฐานหรือทักษะอะไร
+
+2) วิชาที่มีในหลักสูตรที่แนะนำ
+แนะนำเป็น bullet list ว่าวิชาไหนช่วยเรื่องอะไร และเชื่อมกับอาชีพในอนาคตอย่างไร
+""".strip()
 
     resp = ollama.chat(
         model=OLLAMA_MODEL,
         messages=[
-            {"role": "system", "content": "You are a friendly assistant."},
-            {"role": "user", "content": career_question},
-        ]
+            {"role": "system", "content": "You are a friendly course advisor assistant."},
+            {"role": "user", "content": prompt},
+        ],
     )
-    
-    answer = resp["message"]["content"]
 
-    if "ใช่" in answer:
-        # ถ้าผู้ใช้ตอบ "ใช่", ให้ถาม Ollama ว่าควรเรียนอะไรบ้าง
-        career_query = f"ถ้าฉันต้องการทำอาชีพ {career_goals} ฉันควรเรียนวิชาอะไรบ้างเพื่อเตรียมตัว?"
-        
-        career_resp = ollama.chat(
-            model=OLLAMA_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a career advisor."},
-                {"role": "user", "content": career_query},
-            ]
-        )
-        
-        career_advice = career_resp["message"]["content"]
-        
-        print("Career advice from Ollama:", career_advice)
-        # แปลง career_advice ให้เป็น vector
-        career_vector = embedder.encode(career_advice).tolist()
+    answer = resp["message"]["content"].strip()
 
-        # ค้นหาวิชาที่เกี่ยวข้องกับอาชีพจาก vector ที่ได้
-        recommended_courses = search_courses_by_skills(career_advice, req.limit)
-        
-        context = "\n".join([
-            f"[{i+1}] {course['courseNameTh']} ({course['courseCode']})\n"
-            f"EN: {course['courseNameEn']}\n"
-            f"Desc: {course['description']}\n"
-            f"Category: {course['category']} | Credits: {course['credits']}"
-            for i, course in enumerate(recommended_courses)
-        ])
-        
-        prompt = (
-            "คุณคือผู้ช่วยแนะนำรายวิชาในมหาวิทยาลัย\n"
-            "ให้ตอบโดยอิงจากข้อมูลวิชาใน CONTEXT\n\n"
-            f"CONTEXT:\n{context}\n\n"
-            f"QUESTION: {req.queryText}\n\n"
-            "ขอผลลัพธ์เป็นภาษาไทย กระชับ และมี 3 ส่วน:\n"
-            "1) **คำแนะนำ**: สรุปคำแนะนำวิชา 3-6 บรรทัด โดยพิจารณาความสำคัญของวิชาในด้านต่าง ๆ เช่น ทักษะที่ได้จากวิชานั้น\n"
-            "2) **วิชาที่แนะนำ**: ให้แนะนำวิชาในรูปแบบของ bullet list โดยอธิบายเหตุผลว่าแต่ละวิชาเหมาะกับใครและทำไม\n"
-            "3) **รีวิวจากนักศึกษา**: สำหรับแต่ละวิชา ให้สรุปรีวิวจากนักศึกษาในลักษณะที่น่าสนใจและกระชับ ถ้าไม่มีรีวิวให้บอกว่า (วิชานี้ยังไม่มีรีวิว)\n"
-        )
-        
-        # ส่งคำถามไปยัง Ollama
-        resp = ollama.chat(
-            model=OLLAMA_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a friendly course advisor assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
-
-        answer = resp["message"]["content"]
-        
-        return {"answer": answer, "courses": recommended_courses}
-    
-    else:
-        return {"ok": False, "error": "User did not confirm career choice"}
-
+    return {"answer": answer, "sources": recommended_courses}
 class CourseSummaryRequest(BaseModel):
     courseId: int
     maxReviews: int = 20

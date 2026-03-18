@@ -5,26 +5,7 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 export class RecommendationService {
   private readonly ragBaseUrl = process.env.RAG_SERVICE_URL;
 
-  async ragAnswer(queryText: string, topK = 3) {
-    if (!this.ragBaseUrl) {
-      throw new InternalServerErrorException('RAG_SERVICE_URL is not configured');
-    }
-
-    const res = await fetch(`${this.ragBaseUrl}/rag/answer`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ queryText, topK }),
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new InternalServerErrorException(`RAG service error: ${err}`);
-    }
-
-    return res.json(); // { answer, sources }
-  }
-
-  async ragsAnswer(queryText: string, topK: number = 3, userId: number) {
+  async ragAnswer(queryText: string, topK: number = 3, userId: number) {
     if (!this.ragBaseUrl) {
       throw new InternalServerErrorException('RAG_SERVICE_URL is not configured');
     }
@@ -40,7 +21,7 @@ export class RecommendationService {
       throw new InternalServerErrorException(`RAG service error: ${err}`);
     }
 
-    return res.json(); // { answer, sources }
+    return res.json(); 
   }
 
     async embedOne(courseCode: string) {
