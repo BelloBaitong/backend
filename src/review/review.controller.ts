@@ -1,6 +1,7 @@
-import { Controller, Get, Post, Body, Param, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, UseGuards, Req, Patch, Delete } from '@nestjs/common';
 import { ReviewService } from './review.service';
 import { CreateReviewDto } from './dto/create-review.dto';
+import { UpdateReviewDto } from './dto/update-review.dto';
 import { AuthGuard } from '@nestjs/passport';
 
 
@@ -24,8 +25,6 @@ export class ReviewController {
   return this.reviewService.findByCourseCode(courseCode);
 }
 
-
-
 @Post('course/:courseId/review')
 @UseGuards(AuthGuard('jwt'))
 createReviewByCourseId(
@@ -36,5 +35,29 @@ createReviewByCourseId(
   return this.reviewService.createByCourseId(+courseId, dto, req.user.id);
 }
 
+ // ✅ ดูรีวิวตัวเองทีละรายการ สำหรับหน้าแก้ไข
+  @Get('review/:reviewId')
+  @UseGuards(AuthGuard('jwt'))
+  findOne(@Param('reviewId') reviewId: string, @Req() req) {
+    return this.reviewService.findOneOwnedByUser(+reviewId, req.user.id);
+  }
+
+  // ✅ แก้ไขรีวิวตัวเอง
+  @Patch('review/:reviewId')
+  @UseGuards(AuthGuard('jwt'))
+  update(
+    @Param('reviewId') reviewId: string,
+    @Body() dto: UpdateReviewDto,
+    @Req() req,
+  ) {
+    return this.reviewService.updateOwnedByUser(+reviewId, dto, req.user.id);
+  }
+
+  // ✅ ลบรีวิวตัวเอง
+  @Delete('review/:reviewId')
+  @UseGuards(AuthGuard('jwt'))
+  remove(@Param('reviewId') reviewId: string, @Req() req) {
+    return this.reviewService.removeOwnedByUser(+reviewId, req.user.id);
+  }
 
 }

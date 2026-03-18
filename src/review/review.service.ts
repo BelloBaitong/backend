@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Review } from './entities/review.entity';
 import { CreateReviewDto } from './dto/create-review.dto';
 import { User } from '../user/entities/user.entity';
 import { Course } from '../course/entities/course.entity';
+import { UpdateReviewDto } from './dto/update-review.dto';
 
 @Injectable()
 export class ReviewService {
@@ -157,7 +158,76 @@ async createByCourseId(courseId: number, dto: CreateReviewDto, userId: number) {
   return this.reviewRepo.save(review);
 }
 
+// ✅ ดึงรีวิวของเจ้าของ เพื่อเอาไปเติมฟอร์มตอนแก้ไข
+  async findOneOwnedByUser(reviewId: number, userId: number) {
+    const review = await this.reviewRepo.findOne({
+      where: { id: reviewId },
+      relations: { user: true, course: true },
+    });
 
+    if (!review) {
+      throw new NotFoundException('Review not found');
+    }
 
-  
+    if (review.user?.id !== userId) {
+      throw new ForbiddenException('You cannot access this review');
+    }
+
+    return {
+      id: review.id,
+      rating: review.rating,
+      comment: review.comment,
+      isAnonymous: review.isAnonymous,
+      createdAt: review.createdAt,
+      updatedAt: review.updatedAt,
+      course: review.course
+        ? { id: review.course.id, courseCode: review.course.courseCode }
+        : null,
+    };
+  }
+
+  // ✅ แก้ไขรีวิวของเจ้าของ
+  async updateOwnedByUser(
+    reviewId: number,
+    dto: UpdateReviewDto,
+    userId: number,
+  ) {
+    const review = await this.reviewRepo.findOne({
+      where: { id: reviewId },
+      relations: { user: true },
+    });
+
+    if (!review) {
+      throw new NotFoundException('Review not found');
+    }
+
+    if (review.user?.id !== userId) {
+      throw new ForbiddenException('You cannot edit this review');
+    }
+
+    if (dto.rating !== undefined) review.rating = dto.rating;
+    if (dto.comment !== undefined) review.comment = dto.comment;
+    if (dto.isAnonymous !== undefined) review.isAnonymous = dto.isAnonymous;
+
+    return this.reviewRepo.save(review);
+  }
+
+  // ✅ ลบรีวิวของเจ้าของ
+  async removeOwnedByUser(reviewId: number, userId: number) {
+    const review = await this.reviewRepo.findOne({
+      where: { id: reviewId },
+      relations: { user: true },
+    });
+
+    if (!review) {
+      throw new NotFoundException('Review not found');
+    }
+
+    if (review.user?.id !== userId) {
+      throw new ForbiddenException('You cannot delete this review');
+    }
+
+    await this.reviewRepo.remove(review);
+    return { message: 'Review deleted successfully' };
+  }
 }
