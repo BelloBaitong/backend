@@ -899,7 +899,7 @@ def rag_answer_career(req: RagRequest):
 
     return {"answer": answer, "sources": recommended_courses}
 class CourseSummaryRequest(BaseModel):
-    courseId: int
+    courseCode: str
     maxReviews: int = 20
 
 def fetch_course_and_reviews_by_code(course_code: str, max_reviews: int):
@@ -1017,37 +1017,42 @@ def summarize_course(req: CourseSummaryRequest):
     if not course:
         raise HTTPException(status_code=404, detail="course not found")
 
-    # ถ้าไม่มีรีวิว -> ส่งสถานะข้อมูลไม่พอ (ให้กล่องขึ้นข้อความตาม requirement)
-    if not reviews or len(reviews) == 0:
-        return {
-            "ok": True,
-            "courseCode": req.courseCode,
-            "status": "INSUFFICIENT_DATA",
-            "summary": None,
-        }
-
     _, course_code, name_th, name_en, desc, category, credits = course
 
     review_text_lines = []
-    for rating, comment, is_anon, created_at in reviews:
-        if not comment:
-            continue
-        review_text_lines.append(f"- rating: {rating} | comment: {comment}")
+    ratings = []
 
-    # ถ้าทุกอัน comment ว่างหมด ก็ถือว่าข้อมูลไม่พอ
-    if len(review_text_lines) == 0:
-        return {
-            "ok": True,
-            "courseCode": req.courseCode,
-            "status": "INSUFFICIENT_DATA",
-            "summary": None,
-        }
+    if reviews:
+        for rating, comment, is_anon, created_at in reviews:
+            if rating is not None:
+                ratings.append(rating)
 
-    review_text = "\n".join(review_text_lines)
+            if comment and str(comment).strip():
+                review_text_lines.append(f"- rating: {rating} | comment: {comment}")
 
-    prompt = f"""
+    has_reviews = len(review_text_lines) > 0
+    review_count = len(review_text_lines)
+    avg_rating = round(sum(ratings) / len(ratings), 2) if len(ratings) > 0 else None
+    rating_text = f"{avg_rating}/5" if avg_rating is not None else "ไม่มีข้อมูล"
+
+    if has_reviews:
+        review_text = "\n".join(review_text_lines)
+
+        prompt = f"""
 คุณคือผู้ช่วยสรุปรายวิชาสำหรับนักศึกษา (ภาษาไทย)
-สรุปโดยอิงจาก "รายละเอียดรายวิชา" และ "รีวิว" เท่านั้น ห้ามเดาเกินข้อมูล
+แนวทางการสรุป:
+- ให้ใช้ข้อมูลรายวิชาและรีวิวเป็นฐานหลัก
+- สามารถใช้ความรู้ทั่วไปของศาสตร์หรือสายวิชานั้นเพื่อช่วยอธิบายว่าเนื้อหาเหล่านี้มักเกี่ยวข้องกับอะไร และนักศึกษามักจะได้ทักษะแบบไหน
+- ถ้าเป็นการอธิบายจากความรู้ทั่วไป ไม่ใช่ข้อมูลตรงจากรายวิชา ให้ใช้คำว่า "โดยทั่วไป", "มัก", "อาจ", "มีแนวโน้ม"
+- อย่าคัดลอกคำอธิบายรายวิชามาเรียงใหม่เฉย ๆ แต่ให้ตีความและอธิบายให้นักศึกษาเข้าใจง่ายขึ้น
+- ให้เน้นว่าวิชานี้น่าจะ useful อย่างไรกับการเรียนต่อหรือการทำงาน
+
+ข้อสำคัญ:
+- ห้ามคัดลอกหรือเรียบเรียงคำอธิบายรายวิชาแบบตรงตัวทั้งย่อหน้า
+- ย่อหน้าแรกต้องเป็นการสรุปใหม่ด้วยภาษาที่เข้าใจง่าย เหมือนอธิบายให้นักศึกษาฟัง
+- ถ้าจะอนุมานจากคำอธิบายวิชา ให้ใช้คำว่า "อาจ", "มีแนวโน้ม", "จากลักษณะของวิชา"
+- ให้แยกให้ชัดว่าอะไรดูมาจากรีวิว และอะไรเป็นการตีความจากคำอธิบายรายวิชา
+- ถ้าไม่มีข้อมูลชัดเจนในบางเรื่อง ให้บอกตรง ๆ ว่า "ยังไม่พบข้อมูลชัดเจน"
 
 รายละเอียดรายวิชา:
 - รหัส: {course_code}
@@ -1057,22 +1062,80 @@ def summarize_course(req: CourseSummaryRequest):
 - หน่วยกิต: {credits}
 - คำอธิบาย: {desc}
 
+สถิติรีวิว:
+- จำนวนรีวิวที่ใช้สรุป: {review_count}
+- คะแนนเฉลี่ย: {rating_text}
+
 รีวิวจากผู้เรียน:
 {review_text}
 
-ให้สรุปเป็นข้อความสั้น 4-7 บรรทัด ครอบคลุม:
-1) ภาพรวมวิชาเรียนอะไร
-2) จุดเด่น/ข้อควรระวัง (ตามรีวิว)
-3) เหมาะกับใคร
-4) ความยาก/งานหนัก (ถ้ามีข้อมูล)
+ให้สรุปเป็นภาษาไทยแบบอ่านง่าย ครอบคลุมประเด็นต่อไปนี้:
+1) วิชานี้เรียนเกี่ยวกับอะไร ลักษณะของวิชา เช่น เน้นทฤษฎี ปฏิบัติ การวิเคราะห์ หรือการเขียนโปรแกรมในภาพรวม 3-5 บรรทัด 
+2) พื้นฐานที่ควรมีก่อนเรียน ถ้ามีแนวโน้มจากคำอธิบายหรือรีวิว
+3) นักศึกษาน่าจะได้ทักษะหรือความรู้ด้านใดจากวิชานี้
+4) จุดเด่นและข้อควรระวังที่เห็นจากรีวิว
+5) เหมาะกับใคร
+6) ปิดท้ายด้วยความเห็นสรุปสั้น ๆ ว่าถ้าสนใจสายนี้ วิชานี้น่าจะตอบโจทย์หรือไม่
 
-ตอบเป็นภาษาไทยเท่านั้น ไม่ต้องใส่หัวข้อ
+รูปแบบการตอบ:
+- ใช้ภาษาธรรมชาติ
+- อ่านง่าย
+- ยาวรวมประมาณ 6-8 บรรทัด ไม่ต้องยาวเกินไป
+- ไม่ต้องใส่หัวข้อย่อยแบบตัวเลข
+- ไม่ต้องใช้ markdown
+- ไม่ต้องขึ้นต้นว่า "สรุป:"
 """.strip()
+
+        status = "OK"
+        note = None
+
+    else:
+        prompt = f"""
+คุณคือผู้ช่วยสรุปรายวิชาสำหรับนักศึกษา (ภาษาไทย)
+แนวทางการสรุป:
+- ให้ใช้ข้อมูลรายวิชาและรีวิวเป็นฐานหลัก
+- สามารถใช้ความรู้ทั่วไปของศาสตร์หรือสายวิชานั้นเพื่อช่วยอธิบายว่าเนื้อหาเหล่านี้มักเกี่ยวข้องกับอะไร และนักศึกษามักจะได้ทักษะแบบไหน
+- ถ้าเป็นการอธิบายจากความรู้ทั่วไป ไม่ใช่ข้อมูลตรงจากรายวิชา ให้ใช้คำว่า "โดยทั่วไป", "มัก", "อาจ", "มีแนวโน้ม"
+- อย่าคัดลอกคำอธิบายรายวิชามาเรียงใหม่เฉย ๆ แต่ให้ตีความและอธิบายให้นักศึกษาเข้าใจง่ายขึ้น
+- ให้เน้นว่าวิชานี้น่าจะ useful อย่างไรกับการเรียนต่อหรือการทำงาน
+
+ข้อสำคัญ:
+- ห้ามคัดลอกหรือเรียบเรียงคำอธิบายรายวิชาแบบตรงตัวทั้งย่อหน้า
+- ย่อหน้าแรกต้องเป็นการสรุปใหม่ด้วยภาษาที่เข้าใจง่าย
+- ถ้าจะอนุมานจากคำอธิบายวิชา ให้ใช้คำว่า "อาจ", "มีแนวโน้ม", "จากลักษณะของวิชา"
+- ห้ามอ้างว่ามีรีวิว
+- ถ้าไม่มีข้อมูลชัดเจนในบางเรื่อง ให้บอกตรง ๆ ว่า "ยังไม่พบข้อมูลชัดเจน"
+- ห้ามเขียนยาวหรือเขียนซ้ำ
+
+รายละเอียดรายวิชา:
+- รหัส: {course_code}
+- ชื่อไทย: {name_th}
+- ชื่ออังกฤษ: {name_en}
+- หมวด: {category}
+- หน่วยกิต: {credits}
+- คำอธิบาย: {desc}
+
+ให้สรุปแบบสั้น กระชับ และเหมาะสำหรับแสดงบนหน้าเว็บ โดยใช้รูปแบบนี้:
+- บรรทัดแรก: บอกสั้น ๆ ว่าวิชานี้ยังไม่มีรีวิวจากนักศึกษา และข้อมูลต่อไปนี้สรุปจากคำอธิบายรายวิชาเป็นหลัก
+- จากนั้นสรุป สั้น ๆ 5-6 บรรทัด ครอบคลุม:
+  1) วิชาเรียนเกี่ยวกับอะไร
+  2) พื้นฐานที่อาจควรมีก่อนเรียน
+  3) ทักษะหรือความรู้ที่น่าจะได้จากวิชา
+- ความยาวรวมไม่เกิน 5-6 บรรทัด
+- ไม่ต้องใช้ markdown
+- ไม่ต้องใช้ตัวหนา
+- ไม่ต้องปิดท้ายซ้ำอีกว่ามาจากคำอธิบายรายวิชา
+""".strip()
+
+        status = "NO_REVIEWS"
+        note = "วิชานี้ยังไม่มีรีวิวจากนักศึกษา สรุปนี้อ้างอิงจากคำอธิบายรายวิชาเป็นหลัก"
 
     resp = ollama.chat(
         model=OLLAMA_MODEL,
         messages=[
-            {"role": "system", "content": "Summarize strictly from provided data. No hallucinations."},
+            {
+                "role": "system",
+                "content": "You summarize university courses for students in Thai. Use the provided course description and reviews as the main evidence. Write naturally and concisely for a web UI. Do not copy the description verbatim, do not start like a formal report, and do not invent unsupported specific facts."            },
             {"role": "user", "content": prompt},
         ],
     )
@@ -1082,6 +1145,11 @@ def summarize_course(req: CourseSummaryRequest):
     return {
         "ok": True,
         "courseCode": req.courseCode,
-        "status": "OK",
+        "status": status,
         "summary": summary,
+        "note": note,
+        "meta": {
+            "reviewCount": review_count,
+            "averageRating": avg_rating,
+        },
     }
