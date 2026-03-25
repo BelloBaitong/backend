@@ -25,6 +25,9 @@ export class Course {
   @Column({ type: 'text', nullable: true })
   description?: string; // คำอธิบายรายวิชา
 
+  @Column({ type: 'text', nullable: true })
+  descriptionEn?: string; // คำอธิบายรายวิชาภาษาอังกฤษ  
+
   @Column({ type: 'int', default: 3 })
   credits: number; // หน่วยกิต
 

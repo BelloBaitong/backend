@@ -12,6 +12,11 @@ import { ChatMessage } from './entities/chat-message.entity';
 import { RecommendationService } from '../recommendation/recommendation.service';
 import { User } from '../user/entities/user.entity';
 
+type RagHistoryItem = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
 @Injectable()
 export class ChatService {
   constructor(
@@ -24,6 +29,32 @@ export class ChatService {
     private readonly recommendationService: RecommendationService,
   ) {}
 
+  private normalizeSessionContext(value: unknown): Record<string, any> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, any>;
+  }
+
+  private async buildRecentChatHistory(
+    sessionId: string,
+    limit = 8,
+  ): Promise<RagHistoryItem[]> {
+    const recent = await this.messageRepo.find({
+      where: { session: { id: sessionId } },
+      order: { createdAt: 'DESC' },
+      take: limit,
+    });
+
+    return recent
+      .reverse()
+      .map((m) => ({
+        role: m.role,
+        content: m.content,
+      }))
+      .filter((m) => (m.content ?? '').trim().length > 0);
+  }
+
   async createSession(userId: number, title?: string) {
     if (!userId) throw new BadRequestException('Missing userId');
 
@@ -31,6 +62,7 @@ export class ChatService {
       title: (title ?? 'แชทใหม่').trim() || 'แชทใหม่',
       // ผูก user โดยอ้างอิง id ได้เลย (ไม่ต้อง query user ก่อน)
       user: { id: userId } as User,
+      sessionContext: null,
     });
 
     const saved = await this.sessionRepo.save(session);
@@ -90,16 +122,15 @@ export class ChatService {
   ) {
     if (!userId) throw new BadRequestException('Missing userId');
     if (!sessionId) throw new BadRequestException('Missing sessionId');
+
     const text = (content ?? '').trim();
     if (!text) throw new BadRequestException('content is required');
 
-    // ต้องเป็น session ของ user เท่านั้น
     const session = await this.sessionRepo.findOne({
       where: { id: sessionId, user: { id: userId } },
     });
     if (!session) throw new NotFoundException('Session not found');
 
-    // 1) save user message
     const userMsg = this.messageRepo.create({
       session: { id: session.id } as ChatSession,
       role: 'user',
@@ -108,10 +139,37 @@ export class ChatService {
     });
     const savedUserMsg = await this.messageRepo.save(userMsg);
 
-    // 2) call RAG (ผ่าน recommendation service เดิมของคุณ)
-    const rag = await this.recommendationService. ragAnswer(text, topK, userId); // ส่ง userId ไปด้วย เผื่อ RAG จะใช้ข้อมูลโปรไฟล์ช่วยตอบได้ดีขึ้น
+    const currentTitle = (session.title ?? '').trim();
+    const isDefaultTitle =
+      currentTitle === '' ||
+      currentTitle === 'แชทใหม่' ||
+      currentTitle === 'วิชาที่เรียนง่าย';
 
-    // 3) save assistant message
+    if (isDefaultTitle) {
+      const nextTitle = text.length > 40 ? `${text.slice(0, 40)}...` : text;
+
+      await this.sessionRepo.update(
+        { id: session.id },
+        {
+          title: nextTitle,
+          updatedAt: new Date(),
+        },
+      );
+
+      session.title = nextTitle;
+    }
+
+    const chatHistory = await this.buildRecentChatHistory(session.id, 8);
+    const sessionContext = this.normalizeSessionContext(session.sessionContext);
+
+    const rag = await this.recommendationService.ragAnswer(text, topK, userId, {
+      chatHistory,
+      sessionContext,
+    });
+
+    const nextSessionContext =
+      this.normalizeSessionContext(rag?.sessionContext) ?? sessionContext;
+
     const botMsg = this.messageRepo.create({
       session: { id: session.id } as ChatSession,
       role: 'assistant',
@@ -120,10 +178,12 @@ export class ChatService {
     });
     const savedBotMsg = await this.messageRepo.save(botMsg);
 
-    // 4) update session.updatedAt (ให้ห้องเด้งขึ้นบนสุดใน history)
     await this.sessionRepo.update(
       { id: session.id },
-      { updatedAt: new Date() },
+      {
+        updatedAt: new Date(),
+        sessionContext: nextSessionContext,
+      },
     );
 
     return {
@@ -140,6 +200,24 @@ export class ChatService {
         sources: savedBotMsg.sources ?? null,
         createdAt: savedBotMsg.createdAt,
       },
+      sessionContext: nextSessionContext,
     };
+  }
+
+  async deleteSession(userId: number, sessionId: string) {
+    if (!userId) throw new BadRequestException('Missing userId');
+    if (!sessionId) throw new BadRequestException('Missing sessionId');
+
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, user: { id: userId } },
+    });
+    if (!session) throw new NotFoundException('Session not found');
+
+    await this.sessionRepo.delete({
+      id: sessionId,
+      userId,
+    });
+
+    return { ok: true };
   }
 }

@@ -22,9 +22,46 @@ export class CourseService {
     return this.courseRepo.save(course);
   }
 
-  findAll() {
-    return this.courseRepo.find({ order: { createdAt: 'DESC' } });
-  }
+async findAll() {
+  const rows = await this.courseRepo
+    .createQueryBuilder('c')
+    .leftJoin('c.reviews', 'r')
+    .select([
+      'c.id AS id',
+      'c.courseCode AS "courseCode"',
+      'c.courseNameTh AS "courseNameTh"',
+      'c.courseNameEn AS "courseNameEn"',
+      'c.credits AS credits',
+      'c.category AS category',
+      'c.imageUrl AS "imageUrl"',
+      'c.createdAt AS "createdAt"',
+      'COUNT(r.id) AS "reviewCount"',
+      'COALESCE(AVG(r.rating), 0) AS "avgRating"',
+    ])
+    .groupBy('c.id')
+    .addGroupBy('c.courseCode')
+    .addGroupBy('c.courseNameTh')
+    .addGroupBy('c.courseNameEn')
+    .addGroupBy('c.credits')
+    .addGroupBy('c.category')
+    .addGroupBy('c.imageUrl')
+    .addGroupBy('c.createdAt')
+    .orderBy('c.createdAt', 'DESC')
+    .getRawMany();
+
+  return rows.map((x) => ({
+    id: Number(x.id),
+    courseCode: x.courseCode,
+    courseNameTh: x.courseNameTh,
+    courseNameEn: x.courseNameEn,
+    credits: Number(x.credits),
+    category: x.category,
+    imageUrl: x.imageUrl,
+    createdAt: x.createdAt,
+    reviewCount: Number(x.reviewCount),
+    avgRating: Number(x.avgRating),
+  }));
+}
 
   async findByCourseCode(courseCode: string) {
   const course = await this.courseRepo.findOne({ where: { courseCode } });
@@ -117,7 +154,7 @@ export class CourseService {
 }
 
 async searchCourses(q: string, limit = 8) {
-  const keyword = (q ?? "").trim();
+  const keyword = (q ?? '').trim();
   if (!keyword) return [];
 
   const kw = `%${keyword}%`;
@@ -126,15 +163,26 @@ async searchCourses(q: string, limit = 8) {
     .createQueryBuilder("c")
     .where(
       new Brackets((qb) => {
-        qb.where("c.courseCode ILIKE :kw", { kw })
-          .orWhere("c.courseNameEn ILIKE :kw", { kw })
-          .orWhere("c.courseNameTh ILIKE :kw", { kw })
-          .orWhere("c.description ILIKE :kw", { kw }); 
+        qb.where('c.courseCode ILIKE :kw', { kw })
+          .orWhere('c.courseNameEn ILIKE :kw', { kw })
+          .orWhere('c.courseNameTh ILIKE :kw', { kw })
+          .orWhere('c.description ILIKE :kw', { kw })
+          .orWhere('c.descriptionEn ILIKE :kw', { kw });
       }),
     )
-    .orderBy("c.courseCode", "ASC")
+    .groupBy('c.id')
+    .addGroupBy('c.courseCode')
+    .addGroupBy('c.courseNameTh')
+    .addGroupBy('c.courseNameEn')
+    .addGroupBy('c.description')
+    .addGroupBy('c.descriptionEn')
+    .addGroupBy('c.credits')
+    .addGroupBy('c.category')
+    .addGroupBy('c.imageUrl')
+    .addGroupBy('c.createdAt')
+    .orderBy('c.courseCode', 'ASC')
     .take(Math.min(limit, 50))
     .getMany();
 }
-}
+} 
 

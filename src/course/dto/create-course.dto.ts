@@ -15,10 +15,15 @@ export class CreateCourseDto {
   // ✅ ภาษาอังกฤษ
   @IsString()
   @MinLength(2)
-  courseNameEn: string;  @IsString()
+  courseNameEn: string;
 
+  @IsString()
   @IsOptional()
   description?: string;
+
+  @IsString()
+  @IsOptional()
+  descriptionEn?: string;
 
   @IsInt()
   @Min(0)

@@ -25,6 +25,9 @@ export class ChatSession {
   @JoinColumn({ name: 'userId' })
   user: User;
 
+  @Column({ type: 'jsonb', nullable: true })
+  sessionContext: Record<string, any> | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

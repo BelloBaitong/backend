@@ -10,5 +10,5 @@ export class RagRequestDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  topK?: number = 3;
+  topK?: number = 20;
 }
