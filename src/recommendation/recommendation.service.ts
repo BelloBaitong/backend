@@ -1,19 +1,41 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 
+type RagHistoryItem = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+type RagAnswerOptions = {
+  chatHistory?: RagHistoryItem[];
+  sessionContext?: Record<string, any> | null;
+};
 
 @Injectable()
 export class RecommendationService {
   private readonly ragBaseUrl = process.env.RAG_SERVICE_URL;
 
-  async ragAnswer(queryText: string, topK: number = 3, userId: number) {
+  async ragAnswer(
+    queryText: string,
+    topK: number = 8,
+    userId: number,
+    options: RagAnswerOptions = {},
+  ) {
     if (!this.ragBaseUrl) {
       throw new InternalServerErrorException('RAG_SERVICE_URL is not configured');
     }
 
+    const { chatHistory, sessionContext } = options;
+
     const res = await fetch(`${this.ragBaseUrl}/rag/answer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ queryText, topK, userId }), // เพิ่ม userId เข้ามาใน body
+      body: JSON.stringify({
+        queryText,
+        topK,
+        userId,
+        chatHistory: chatHistory ?? null,
+        sessionContext: sessionContext ?? null,
+      }),
     });
 
     if (!res.ok) {
@@ -21,10 +43,10 @@ export class RecommendationService {
       throw new InternalServerErrorException(`RAG service error: ${err}`);
     }
 
-    return res.json(); 
+    return res.json();
   }
 
-    async embedOne(courseCode: string) {
+  async embedOne(courseCode: string) {
     if (!this.ragBaseUrl) {
       throw new InternalServerErrorException('RAG_SERVICE_URL is not configured');
     }
@@ -40,7 +62,7 @@ export class RecommendationService {
       throw new InternalServerErrorException(`RAG service error: ${err}`);
     }
 
-    return res.json(); // { ok, courseCode, dim }
+    return res.json();
   }
 
   async embedMissing(limit = 50) {
@@ -59,7 +81,7 @@ export class RecommendationService {
       throw new InternalServerErrorException(`RAG service error: ${err}`);
     }
 
-    return res.json(); // { ok, updated, failed }
+    return res.json();
   }
 
   async recommendCourses(userId: number, limit: number, authorization: string) {
@@ -71,9 +93,9 @@ export class RecommendationService {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: authorization, // ส่ง JWT token ไปให้ RAG service
+        Authorization: authorization,
       },
-      body: JSON.stringify({ userId, limit }), // ส่ง userId และ limit ไปใน body
+      body: JSON.stringify({ userId, limit }),
     });
 
     if (!res.ok) {
@@ -81,7 +103,6 @@ export class RecommendationService {
       throw new InternalServerErrorException(`RAG service error: ${err}`);
     }
 
-    return res.json(); // คืนผลลัพธ์จาก RAG service
+    return res.json();
   }
 }
-

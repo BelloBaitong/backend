@@ -4,38 +4,34 @@ import { RagRequestDto } from './dto/rag-request.dto';
 import { EmbedMissingDto, EmbedOneDto } from './dto/embed.dto';
 import { AuthGuard } from '@nestjs/passport';
 
-@Controller('recommendations')
+@Controller()
 export class RecommendationController {
   constructor(private readonly svc: RecommendationService) {}
 
-   @UseGuards(AuthGuard('jwt'))
-  @Post('rag')
+  @UseGuards(AuthGuard('jwt'))
+  @Post('recommendations/rag')
   async rag(@Body() dto: RagRequestDto, @Req() req: any) {
-    const userId = req.user.id; // ดึง userId จาก JWT token ที่ยืนยันแล้ว
-    return this.svc.ragAnswer(dto.queryText, dto.topK ?? 3, userId); // ส่ง userId พร้อม queryText
+    const userId = req.user.id;
+    return this.svc.ragAnswer(dto.queryText, dto.topK ?? 5, userId);
   }
 
-  // ฝัง embedding ทีละวิชา
-  @Post('embed-one')
+  @Post('recommendations/embed-one')
   async embedOne(@Body() dto: EmbedOneDto) {
     return this.svc.embedOne(dto.courseCode);
   }
 
-  // ฝัง embedding ให้ทุกตัวที่ยัง NULL (ทำเป็น batch)
-  @Post('embed-missing')
+  @Post('recommendations/embed-missing')
   async embedMissing(@Body() dto: EmbedMissingDto) {
     return this.svc.embedMissing(dto.limit ?? 50);
   }
 
-@UseGuards(AuthGuard('jwt')) // ตรวจสอบ JWT token
-  @Post('courses')
+  @UseGuards(AuthGuard('jwt'))
+  @Post('courses/recommend')
   async recommendCourses(@Req() req: any, @Body() body: { limit?: number }) {
-    const authHeader = req.headers?.authorization ?? ''; // ดึง Authorization token
-    const userId = req.user.id; // ดึง userId จาก JWT token ที่มาจาก `AuthGuard`
-    const limit = body.limit ?? 10; // ใช้ limit จาก body หรือค่า default
+    const authHeader = req.headers?.authorization ?? '';
+    const userId = req.user.id;
+    const limit = body.limit ?? 10;
 
-    return this.svc.recommendCourses(userId, limit, authHeader); // ส่งไปที่ service
+    return this.svc.recommendCourses(userId, limit, authHeader);
   }
-
 }
-
