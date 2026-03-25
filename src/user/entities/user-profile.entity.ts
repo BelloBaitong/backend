@@ -32,6 +32,9 @@ export class UserProfile {
   @Column({ type: 'text', array: true, default: () => 'ARRAY[]::text[]' })
   careerGoals: string[];
 
+  @Column('int', { array: true, default: () => "'{}'" })
+  completedCourseIds: number[];
+
   @Column({ type: 'vector', nullable: true })
   embedding: number[] | null;
 

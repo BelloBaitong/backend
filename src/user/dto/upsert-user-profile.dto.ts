@@ -1,4 +1,4 @@
-import { IsArray, IsInt, IsOptional, IsString, Max, Min, ArrayMaxSize } from 'class-validator';
+import { IsArray, IsInt, IsOptional, IsString, Max, Min, ArrayMaxSize, ArrayUnique } from 'class-validator';
 
 export class UpsertUserProfileDto {
   @IsOptional()
@@ -18,4 +18,10 @@ export class UpsertUserProfileDto {
   @IsString({ each: true })
   @ArrayMaxSize(10)
   careerGoals?: string[];
+@ 
+  IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @IsInt({ each: true })
+  completedCourseIds?: number[];
 }

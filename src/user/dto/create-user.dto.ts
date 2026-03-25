@@ -39,4 +39,6 @@ export class CreateUserDto {
     message: `Password must contain minimum 8 and maximum 20 characters, at least one uppercase letter, one lowercase letter, one number and one special character`,
   })
   password: string;
+
+  
 }

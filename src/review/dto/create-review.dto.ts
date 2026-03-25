@@ -5,6 +5,7 @@ import {
   Min,
   Max,
   IsBoolean,
+  MaxLength,
 } from 'class-validator';
 
 export class CreateReviewDto {
@@ -15,6 +16,7 @@ export class CreateReviewDto {
 
   @IsString()
   @IsOptional()
+  @MaxLength(700)
   comment?: string; // ความคิดเห็น
 
   @IsBoolean()

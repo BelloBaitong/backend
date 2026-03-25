@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, ConflictException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Review } from './entities/review.entity';
@@ -6,6 +11,7 @@ import { CreateReviewDto } from './dto/create-review.dto';
 import { User } from '../user/entities/user.entity';
 import { Course } from '../course/entities/course.entity';
 import { UpdateReviewDto } from './dto/update-review.dto';
+import { UserProfile } from '../user/entities/user-profile.entity';
 
 @Injectable()
 export class ReviewService {
@@ -18,14 +24,43 @@ export class ReviewService {
 
     @InjectRepository(Course)
     private readonly courseRepo: Repository<Course>,
+
+    @InjectRepository(UserProfile)
+    private readonly userProfileRepo: Repository<UserProfile>,
   ) {}
 
+  private async assertCourseCompleted(userId: number, courseId: number) {
+    const profile = await this.userProfileRepo.findOne({
+      where: { userId },
+    });
+
+    const completedCourseIds = Array.isArray(profile?.completedCourseIds)
+      ? profile!.completedCourseIds
+      : [];
+
+    if (!completedCourseIds.includes(courseId)) {
+      throw new ForbiddenException(
+        'You can review only courses you have completed',
+      );
+    }
+  }
+
+  private async assertNoDuplicateReview(userId: number, courseId: number) {
+    const exists = await this.reviewRepo.findOne({
+      where: { user: { id: userId }, course: { id: courseId } },
+    });
+
+    if (exists) {
+      throw new ConflictException('You have already reviewed this course');
+    }
+  }
+
   findAll() {
-  return this.reviewRepo.find({
-    relations: ['course'],
-    order: { createdAt: 'DESC' },
-  });
-}
+    return this.reviewRepo.find({
+      relations: ['course'],
+      order: { createdAt: 'DESC' },
+    });
+  }
 
   /**
    * สร้างรีวิวใหม่
@@ -43,13 +78,8 @@ export class ReviewService {
     const course = await this.courseRepo.findOne({ where: { id: courseId } });
     if (!course) throw new NotFoundException('Course not found');
 
-    // กันรีวิวซ้ำ
-    const exists = await this.reviewRepo.findOne({
-      where: { user: { id: userId }, course: { id: courseId } },
-    });
-    if (exists) {
-      throw new ConflictException('You have already reviewed this course');
-    }
+    await this.assertCourseCompleted(userId, courseId);
+    await this.assertNoDuplicateReview(userId, courseId);
 
     const review = this.reviewRepo.create({
       ...dto,
@@ -73,90 +103,94 @@ export class ReviewService {
   // review.service.ts
 
   findByCourse(courseId: number) {
-  return this.reviewRepo.find({
-    where: { course: { id: courseId } },
-    relations: {
-      user: true,
-    },
-    select: {
-      id: true,
-      rating: true,
-      comment: true,
-      isAnonymous: true,
-      createdAt: true,
-      user: { id: true, name: true, username: true, email: true },
-    },
-    order: { createdAt: 'DESC' },
-  });
-}
-
-async findByCourseCode(courseCode: string) {
-  const rows = await this.reviewRepo.find({
-    where: { course: { courseCode } }, // หรือ { course: { code: courseCode } } แล้วแต่ entity จริง
-    relations: { user: true, course: true },
-    order: { createdAt: 'DESC' },
-  });
-
-  // ✅ ส่ง user.name กลับไป (แต่ถ้า isAnonymous=true ให้ซ่อน)
-  return rows.map((r) => ({
-    id: r.id,
-    rating: r.rating,
-    comment: r.comment,
-    isAnonymous: r.isAnonymous,
-    createdAt: r.createdAt,
-    updatedAt: r.updatedAt,
-    user: r.isAnonymous
-      ? null
-      : r.user
-        ? { id: r.user.id, name: r.user.name, email: r.user.email }
-        : null,
-    course: r.course ? { id: r.course.id, courseCode: r.course.courseCode } : null,
-  }));
-}
-
-
-
-
-async createByCourseCode(
-  courseCode: string,
-  dto: CreateReviewDto,
-  userId: number,
-) {
-  // 1. หา course จาก code
-  const course = await this.courseRepo.findOne({
-    where: { courseCode: courseCode },
-  });
-
-  if (!course) {
-    throw new NotFoundException('Course not found');
+    return this.reviewRepo.find({
+      where: { course: { id: courseId } },
+      relations: {
+        user: true,
+      },
+      select: {
+        id: true,
+        rating: true,
+        comment: true,
+        isAnonymous: true,
+        createdAt: true,
+        user: { id: true, name: true, username: true, email: true },
+      },
+      order: { createdAt: 'DESC' },
+    });
   }
 
-  // 2. สร้าง review
-  const review = this.reviewRepo.create({
-    rating: dto.rating,
-    comment: dto.comment,
-    isAnonymous: dto.isAnonymous ?? false,
-    course: course,          // ผูก course
-    user: { id: userId },    // ผูก user (ไม่ต้อง query user ซ้ำ)
-  }as any);
+  async findByCourseCode(courseCode: string) {
+    const rows = await this.reviewRepo.find({
+      where: { course: { courseCode } },
+      relations: { user: true, course: true },
+      order: { createdAt: 'DESC' },
+    });
 
-  return this.reviewRepo.save(review);
-}
+    return rows.map((r) => ({
+      id: r.id,
+      rating: r.rating,
+      comment: r.comment,
+      isAnonymous: r.isAnonymous,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      user: r.isAnonymous
+        ? null
+        : r.user
+          ? { id: r.user.id, name: r.user.name, email: r.user.email }
+          : null,
+      course: r.course ? { id: r.course.id, courseCode: r.course.courseCode } : null,
+    }));
+  }
 
-async createByCourseId(courseId: number, dto: CreateReviewDto, userId: number) {
-  const course = await this.courseRepo.findOne({ where: { id: courseId } });
-  if (!course) throw new NotFoundException('Course not found');
+  async createByCourseCode(
+    courseCode: string,
+    dto: CreateReviewDto,
+    userId: number,
+  ) {
+    const course = await this.courseRepo.findOne({
+      where: { courseCode },
+    });
 
-  const review = this.reviewRepo.create({
-    rating: dto.rating,
-    comment: dto.comment,
-    isAnonymous: dto.isAnonymous ?? false,
-    course,
-    user: { id: userId } as any,
-  });
+    if (!course) {
+      throw new NotFoundException('Course not found');
+    }
 
-  return this.reviewRepo.save(review);
-}
+    await this.assertCourseCompleted(userId, course.id);
+    await this.assertNoDuplicateReview(userId, course.id);
+
+    const review = this.reviewRepo.create({
+      rating: dto.rating,
+      comment: dto.comment,
+      isAnonymous: dto.isAnonymous ?? false,
+      course,
+      user: { id: userId } as any,
+    });
+
+    return this.reviewRepo.save(review);
+  }
+
+  async createByCourseId(
+    courseId: number,
+    dto: CreateReviewDto,
+    userId: number,
+  ) {
+    const course = await this.courseRepo.findOne({ where: { id: courseId } });
+    if (!course) throw new NotFoundException('Course not found');
+
+    await this.assertCourseCompleted(userId, courseId);
+    await this.assertNoDuplicateReview(userId, courseId);
+
+    const review = this.reviewRepo.create({
+      rating: dto.rating,
+      comment: dto.comment,
+      isAnonymous: dto.isAnonymous ?? false,
+      course,
+      user: { id: userId } as any,
+    });
+
+    return this.reviewRepo.save(review);
+  }
 
 // ✅ ดึงรีวิวของเจ้าของ เพื่อเอาไปเติมฟอร์มตอนแก้ไข
   async findOneOwnedByUser(reviewId: number, userId: number) {
