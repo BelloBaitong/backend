@@ -94,12 +94,28 @@ def build_course_text(course_code, name_th, name_en, desc_th, desc_en, category,
 
     return "\n".join(parts)  # รวมแต่ละส่วนเป็นข้อความเดียว โดยคั่นด้วย newline  newline ช่วยให้ embedding แยกแยะส่วนต่าง ๆ ได้ดีขึ้น) 
 
+def build_course_text_test(name_th, name_en, desc_th_test, desc_en_test):
+    """
+    รวมข้อมูลวิชาให้เป็นข้อความเดียว (text) เพื่อส่งเข้า embedder
+    แนวคิด: embedding ควรถอดความหมายจากชื่อวิชา/คำอธิบายเฉพาะที่เลือก 
+    เพื่อให้ vector search หา "ความคล้าย" ได้ดีขึ้น
+    """
+    parts = []  # list เก็บแต่ละส่วนของข้อมูลวิชา
+    # if เพื่อ ใส่เฉพาะฟิลด์ ที่มีค่า (กัน None / empty)
+    if name_th:
+        parts.append(f"ชื่อวิชา: {name_th}")
+    if name_en:
+        parts.append(f"English name: {name_en}")
+    if desc_th_test:
+        parts.append(f"คำอธิบายภาษาไทย: {desc_th_test}")
+    if desc_en_test:
+        parts.append(f"English description: {desc_en_test}")
+  
+    return "\n".join(parts)  # รวมแต่ละส่วนเป็นข้อความเดียว โดยคั่นด้วย newline
+
 def build_profile_text(study_year, interests, career_goals):
 
     parts = []
-
-    if study_year:
-        parts.append(f"ชั้นปี: {study_year}")
 
     if interests:
         parts.append(f"ความสนใจ: {', '.join(interests or [])}")
@@ -121,7 +137,7 @@ def embed_one_profile(req: EmbedOneProfileRequest):
     cur = conn.cursor()
 
     cur.execute(f"""
-        SELECT id, "studyYear", interests, "careerGoals"
+        SELECT id, interests, "careerGoals"
         FROM {USER_PROFILE_TABLE}
         WHERE id = %s
     """, (req.userId,))
@@ -133,9 +149,9 @@ def embed_one_profile(req: EmbedOneProfileRequest):
         conn.close()
         return {"ok": False, "error": "profile not found"}
 
-    user_id, study_year, interests, career_goals = row
+    user_id,  interests, career_goals = row
 
-    text = build_profile_text(study_year, interests, career_goals)
+    text = build_profile_text( interests, career_goals)
 
     vec = embedder.encode(text).tolist()
 
@@ -200,9 +216,11 @@ def embed_missing_profiles(req: EmbedMissingProfilesRequest):
 
     return {"ok": True, "updated": updated}
 
+
 class RecommendRequest(BaseModel):
     userId: int
     limit: int = 10
+    track: Literal["elective", "general"] = "elective"
 
 
 @app.post("/courses/recommend")
@@ -398,6 +416,64 @@ def embed_missing(req: EmbedMissingRequest):
 
     return {"ok": True, "updated": updated, "failed": failed}
 
+@app.post("/courses/embed-missing-expand")
+def embed_missing(req: EmbedMissingRequest):
+    """
+    ฝัง embedding ให้กับคอร์สที่ embedding ยังเป็น NULL (ทำทีละ limit)
+    ใช้สำหรับ "เติมของค้าง" หรือ initial embedding ทั้งตารางแบบค่อย ๆ ทำ
+    โดยใช้เฉพาะคอลัมน์ descriptionExpand สำหรับการฝัง embedding
+    และข้ามหาก descriptionExpand เป็นค่าว่างหรือ NULL
+    """
+
+    # SELECT เฉพาะคอร์สที่ embedding IS NULL (ยังไม่เคยฝัง) และเลือกคอลัมน์ descriptionExpand
+    sql_select = f"""
+        SELECT "courseCode", "descriptionExpand"
+        FROM {COURSE_TABLE}
+        WHERE "embedding" IS NULL
+        ORDER BY "id" ASC
+        LIMIT %s;
+    """
+
+    # UPDATE embedding ของแต่ละคอร์ส
+    sql_update = f"""
+        UPDATE {COURSE_TABLE}
+        SET embedding = %s::vector
+        WHERE "courseCode" = %s;
+    """
+
+    updated = 0
+    failed = []
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # ดึงรายการที่ต้องทำ embedding
+            cur.execute(sql_select, (req.limit,))
+            rows = cur.fetchall()
+
+            for row in rows:
+                course_code, desc_expand = row  # ดึงข้อมูลจาก descriptionExpand
+                try:
+                    # ตรวจสอบว่า descriptionExpand เป็น NULL หรือค่าว่าง
+                    if not desc_expand:  # ถ้าเป็น NULL หรือ empty string
+                        continue  # ข้ามไปยังวิชาถัดไป
+
+                    # ใช้ descriptionExpand ในการฝัง embedding
+                    text = desc_expand
+
+                    # ฝัง embedding
+                    vec = embedder.encode(text).tolist()
+                    vec_str = "[" + ", ".join(map(str, vec)) + "]"
+
+                    # update embedding ในฐานข้อมูล
+                    cur.execute(sql_update, (vec_str, course_code))  # ใช้ course_code ที่ดึงมา
+                    updated += 1
+                except Exception as e:
+                    failed.append({"courseCode": course_code, "error": str(e)})
+
+            # commit หลังจากทำครบทุกอย่าง
+            conn.commit()
+
+    return {"ok": True, "updated": updated, "failed": failed}
 
 # DTO สำหรับ RAG endpoint request/response ต้องมี field อะไร ชนิดอะไร เวลาเรียก API ต้องส่งข้อมูลหน้าตายังไง
 SYSTEM_CHAT_KEYWORDS = [
@@ -440,7 +516,23 @@ class RagRequest(BaseModel):
     userId: int | None = None
     chatHistory: list[dict[str, Any]] | None = None
     sessionContext: dict[str, Any] | None = None
+    track: Literal["elective", "general"] | None = None
 
+
+def normalize_track(track: str | None) -> Literal["elective", "general"]:
+    return "general" if track == "general" else "elective"
+
+
+def resolve_selected_track(
+    track: str | None,
+    session_context: dict[str, Any] | None = None,
+) -> Literal["elective", "general"]:
+    saved_track = (session_context or {}).get("selectedTrack")
+    return normalize_track(track or saved_track)
+
+
+def resolve_category_filter(track: str | None) -> str:
+    return "GENERAL" if normalize_track(track) == "general" else "ELECTIVE"
 
 def normalize_text(text: str) -> str:
     text = (text or "").strip().lower()
@@ -474,9 +566,10 @@ def row_to_course_dict(row, distance: float | None = None):
         "courseNameEn": row[2],
         "description": row[3],
         "descriptionEn": row[4],
-        "category": row[5],
-        "credits": row[6],
-        "imageUrl": row[7],
+        "descriptionExpand": row[5],
+        "category": row[6],
+        "credits": row[7],
+        "imageUrl": row[8],
         "distance": float(distance if distance is not None else 0.0),
     }
 
@@ -490,7 +583,6 @@ def build_courses_context(courses: list[dict]) -> str:
         f"Category: {course['category']} | Credits: {course['credits']}"
         for i, course in enumerate(courses)
     ])
-
 
 def build_reviews_context(courses: list[dict], course_reviews: dict[str, str]) -> str:
     lines = []
@@ -555,11 +647,20 @@ def upsert_profile_embedding(profile_id: int, profile_text: str):
             )
             conn.commit()
 
-
-def get_courses_by_codes(course_codes: list[str]) -> list[dict]:
+def get_courses_by_codes(
+    course_codes: list[str],
+    category_filter: str | None = None,
+) -> list[dict]:
     cleaned_codes = [code for code in course_codes if code]
     if not cleaned_codes:
         return []
+
+    where_clauses = ['"courseCode" = ANY(%s)']
+    params: list[Any] = [cleaned_codes]
+
+    if category_filter:
+        where_clauses.append('"category" = %s')
+        params.append(category_filter)
 
     sql = f"""
         SELECT
@@ -568,16 +669,17 @@ def get_courses_by_codes(course_codes: list[str]) -> list[dict]:
             "courseNameEn",
             "description",
             "descriptionEn",
+            "descriptionExpand",
             "category",
             "credits",
             "imageUrl"
         FROM {COURSE_TABLE}
-        WHERE "courseCode" = ANY(%s)
+        WHERE {' AND '.join(where_clauses)}
     """
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (cleaned_codes,))
+            cur.execute(sql, tuple(params))
             rows = cur.fetchall()
 
     course_map = {row[0]: row_to_course_dict(row) for row in rows}
@@ -714,7 +816,7 @@ def fallback_query_analysis(
         "mentioned_course_code": None,
         "mentioned_course_name": None,
         "follow_up_target": "none",
-        "should_use_profile": True,
+        "should_use_profile": False,
         "topic_shift": False,
     }
 
@@ -737,8 +839,9 @@ def analyze_query_with_ollama(
     if fallback_first["intent"] == "recommend_courses" and fallback_first["query_for_embedding"] == "":
         return fallback_first
 
-    profile_excerpt = profile_text[:700] if profile_text else ""
-
+    # ใช้ profile เฉพาะกรณี profile_only ที่ตั้งใจวิเคราะห์จากโปรไฟล์จริง ๆ
+    is_profile_only_analysis = query_text.strip() == "ช่วยวิเคราะห์โปรไฟล์นี้เพื่อแนะนำรายวิชาที่เหมาะสม"
+    profile_excerpt = profile_text[:700] if (is_profile_only_analysis and profile_text) else ""
     session_summary = json.dumps(
         {
             "last_intent": session_context.get("last_intent"),
@@ -822,6 +925,12 @@ schema:
             "should_use_profile": bool(parsed.get("should_use_profile", fallback["should_use_profile"])),
             "topic_shift": bool(parsed.get("topic_shift", False)),
         }
+        # ถ้ามี keyword/topic ชัดในคำถาม -> ห้ามใช้ profile
+        has_clear_query = bool((result.get("query_for_embedding") or "").strip())
+        has_keywords = bool(result.get("include_keywords"))
+
+        if result["intent"] == "recommend_courses":
+            result["should_use_profile"] = not (has_clear_query or has_keywords)
 
         # hard guard เพิ่ม
         if "วิชาแรก" in q_norm or "ตัวแรก" in q_norm:
@@ -854,6 +963,11 @@ def expand_query_with_ollama(
 
 งานของคุณไม่ใช่การตอบคำถามผู้ใช้โดยตรง
 แต่คือการแปลงคำถามของผู้ใช้ให้เป็นคำค้นที่เหมาะกับการค้นหารายวิชาในฐานข้อมูลและ vector retrieval
+
+จงแปลงคำถามของนักศึกษาที่ให้มา
+ให้เป็นชุดคำสำคัญ (Keywords) ทางวิชาการทั้งภาษาไทยและอังกฤษ
+ที่มักจะปรากฏในหลักสูตรคอมพิวเตอร์
+เพื่อใช้ในการค้นหาข้อมูลวิชาที่เกี่ยวข้องที่สุด
 
 ห้ามตอบเป็น prose
 ห้ามอธิบายเหตุผล
@@ -898,7 +1012,7 @@ schema:
 - skill_keywords:
   - เป็น list ของคำสำคัญ 3-8 คำ
   - แต่ละคำควรเป็น keyword หรือ short phrase ที่ใช้ค้นวิชาได้จริง
-  - prefer คำเชิงวิชาการ/เทคนิค มากกว่าคำกว้างทั่วไป
+  - prefer คำเชิงวิชาการหรือเทคนิค มากกว่าคำกว้างทั่วไป
   - ห้ามใส่คำที่แทบไม่ช่วยแยกวิชา
 
 - negative_keywords:
@@ -923,8 +1037,8 @@ schema:
                     "content": (
                         "You expand student queries for university course retrieval. "
                         "Return strict JSON only. "
-                        "Prefer canonical academic concepts, subfields, and standard technical terms "
-                        "that are likely to appear in course titles or descriptions. "
+                        "Convert informal student intent into canonical academic keywords in Thai and English when useful. "
+                        "Prefer canonical academic concepts, subfields, technologies, and standard technical terms "
                         "Avoid vague paraphrases and avoid inventing unrelated terms."
                     )
                 },
@@ -954,10 +1068,21 @@ schema:
             "negative_keywords": [],
         }
 
-
-def query_courses_by_vector(qvec, k: int, candidate_limit: int | None = None):
+def query_courses_by_vector(
+    qvec,
+    k: int,
+    candidate_limit: int | None = None,
+    category_filter: str | None = None,
+):
     safe_limit = max(1, candidate_limit or k)
     qvec_str = "[" + ", ".join(map(str, qvec)) + "]"
+
+    where_clauses = ['"embedding" IS NOT NULL']
+    params: list[Any] = [qvec_str]
+
+    if category_filter:
+        where_clauses.append('"category" = %s')
+        params.append(category_filter)
 
     sql = f"""
         SELECT
@@ -966,23 +1091,25 @@ def query_courses_by_vector(qvec, k: int, candidate_limit: int | None = None):
             "courseNameEn",
             "description",
             "descriptionEn",
+            "descriptionExpand",
             "category",
             "credits",
             "imageUrl",
             embedding <-> %s::vector AS distance
         FROM {COURSE_TABLE}
-        WHERE "embedding" IS NOT NULL
+        WHERE {' AND '.join(where_clauses)}
         ORDER BY distance ASC
         LIMIT %s;
     """
 
+    params.append(safe_limit)
+
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (qvec_str, safe_limit))
+            cur.execute(sql, tuple(params))
             rows = cur.fetchall()
 
-    return [row_to_course_dict(row[:8], distance=row[8]) for row in rows]
-
+    return [row_to_course_dict(row[:9], distance=row[9]) for row in rows]
 
 def fetch_reviews_for_courses(courses, limit_per_course: int = 5):
     course_codes = [course["courseCode"] for course in courses if course.get("courseCode")]
@@ -1038,60 +1165,81 @@ def fetch_reviews_for_courses(courses, limit_per_course: int = 5):
     }
 
 
-def find_exact_course_match(query_text: str, mentioned_course_code: str | None = None, mentioned_course_name: str | None = None):
+def find_exact_course_match(
+    query_text: str,
+    mentioned_course_code: str | None = None,
+    mentioned_course_name: str | None = None,
+    category_filter: str | None = None,
+):
     q = normalize_text(query_text)
     course_code = mentioned_course_code or extract_course_code(query_text)
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             if course_code:
-                cur.execute(
-                    f'''
+                sql = f'''
                     SELECT
                         "courseCode",
                         "courseNameTh",
                         "courseNameEn",
                         "description",
                         "descriptionEn",
+                        "descriptionExpand",
                         "category",
                         "credits",
                         "imageUrl"
                     FROM {COURSE_TABLE}
                     WHERE "courseCode" = %s
-                    LIMIT 1
-                    ''',
-                    (course_code,),
-                )
+                '''
+                params: list[Any] = [course_code]
+
+                if category_filter:
+                    sql += ' AND "category" = %s'
+                    params.append(category_filter)
+
+                sql += ' LIMIT 1'
+
+                cur.execute(sql, tuple(params))
                 row = cur.fetchone()
                 if row:
                     return row_to_course_dict(row)
 
             course_name = normalize_text(mentioned_course_name or "")
-            cur.execute(
-                f'''
+            sql = f'''
                 SELECT
                     "courseCode",
                     "courseNameTh",
                     "courseNameEn",
                     "description",
                     "descriptionEn",
+                    "descriptionExpand",
                     "category",
                     "credits",
                     "imageUrl"
                 FROM {COURSE_TABLE}
-                WHERE LOWER(TRIM("courseNameTh")) = %s
-                   OR LOWER(TRIM("courseNameEn")) = %s
-                   OR LOWER(TRIM("courseCode")) = %s
-                LIMIT 1
-                ''',
-                (course_name or q, course_name or q, course_name or q),
-            )
+                WHERE (
+                    LOWER(TRIM("courseNameTh")) = %s
+                    OR LOWER(TRIM("courseNameEn")) = %s
+                    OR LOWER(TRIM("courseCode")) = %s
+                )
+            '''
+            params = [course_name or q, course_name or q, course_name or q]
+
+            if category_filter:
+                sql += ' AND "category" = %s'
+                params.append(category_filter)
+
+            sql += ' LIMIT 1'
+
+            cur.execute(sql, tuple(params))
             row = cur.fetchone()
 
     return row_to_course_dict(row) if row else None
 
-
-def find_course_by_name_in_query(query_text: str):
+def find_course_by_name_in_query(
+    query_text: str,
+    category_filter: str | None = None,
+):
     q = normalize_text(query_text)
 
     sql = f"""
@@ -1101,13 +1249,25 @@ def find_course_by_name_in_query(query_text: str):
             "courseNameEn",
             "description",
             "descriptionEn",
+            "descriptionExpand",
             "category",
             "credits",
             "imageUrl"
         FROM {COURSE_TABLE}
-        WHERE POSITION(LOWER("courseNameTh") IN %s) > 0
-           OR POSITION(LOWER("courseNameEn") IN %s) > 0
-           OR POSITION(LOWER("courseCode") IN %s) > 0
+        WHERE (
+            POSITION(LOWER("courseNameTh") IN %s) > 0
+            OR POSITION(LOWER("courseNameEn") IN %s) > 0
+            OR POSITION(LOWER("courseCode") IN %s) > 0
+        )
+    """
+
+    params: list[Any] = [q, q, q]
+
+    if category_filter:
+        sql += ' AND "category" = %s'
+        params.append(category_filter)
+
+    sql += """
         ORDER BY GREATEST(
             LENGTH(COALESCE("courseNameTh", '')),
             LENGTH(COALESCE("courseNameEn", ''))
@@ -1117,7 +1277,7 @@ def find_course_by_name_in_query(query_text: str):
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (q, q, q))
+            cur.execute(sql, tuple(params))
             row = cur.fetchone()
 
     return row_to_course_dict(row) if row else None
@@ -1234,64 +1394,75 @@ def score_course_candidate(
     exact_course_name: str | None = None,
     preferred_codes: list[str] | None = None,
 ) -> float:
-    haystack = normalize_text(
-        " ".join([
-            str(course.get("courseCode", "")),
-            str(course.get("courseNameTh", "")),
-            str(course.get("courseNameEn", "")),
-            str(course.get("description", "")),
-            str(course.get("descriptionEn", "")),
-            str(course.get("category", "")),
-        ])
+    title_th = normalize_text(str(course.get("courseNameTh", "") or ""))
+    title_en = normalize_text(str(course.get("courseNameEn", "") or ""))
+    code_text = normalize_text(str(course.get("courseCode", "") or ""))
+    category_text = normalize_text(str(course.get("category", "") or ""))
+
+    main_text = normalize_text(
+        str(course.get("descriptionExpand", "") or "")
+        or str(course.get("description", "") or "")
+        or str(course.get("descriptionEn", "") or "")
     )
 
     score = 0.0
 
-    # 1) keyword ที่ควรมี
+    # 1) include keywords
     for keyword in include_keywords:
-        keyword_norm = normalize_text(keyword)
-        if keyword_norm and keyword_norm in haystack:
-            score += 2.5
+        k = normalize_text(keyword)
+        if not k:
+            continue
 
-    # 2) keyword ที่ควรหลีกเลี่ยง
+        if k == code_text or k in title_th or k in title_en:
+            score += 3.0
+        elif k in main_text:
+            score += 1.5
+
+    # 2) exclude keywords
     for keyword in exclude_keywords:
-        keyword_norm = normalize_text(keyword)
-        if keyword_norm and keyword_norm in haystack:
-            score -= 4.0
+        k = normalize_text(keyword)
+        if not k:
+            continue
+
+        if k in title_th or k in title_en:
+            score -= 3.0
+        elif k in main_text:
+            score -= 1.5
 
     # 3) token overlap จาก query จริง
-    query_tokens = [
+    query_tokens = {
         token
         for token in re.split(r"[^\wก-๙]+", normalize_text(query_text))
         if len(token) >= 3
-    ]
+    }
 
-    overlap = 0
-    for token in set(query_tokens):
-        if token in haystack:
-            overlap += 1
+    overlap_title = 0
+    overlap_main = 0
 
-    score += min(overlap, 6) * 0.6
+    for token in query_tokens:
+        if token == code_text or token in title_th or token in title_en:
+            overlap_title += 1
+        elif token in main_text:
+            overlap_main += 1
 
-    # 4) exact match รหัสวิชา
+    score += min(overlap_title, 4) * 1.2
+    score += min(overlap_main, 6) * 0.4
+
+    # 4) exact code
     if exact_course_code and course.get("courseCode") == exact_course_code:
         score += 20.0
 
-    # 5) exact match ชื่อวิชา
+    # 5) exact name
     exact_name = normalize_text(exact_course_name or "")
-    if exact_name and (
-        exact_name == normalize_text(course.get("courseNameTh", "")) or
-        exact_name == normalize_text(course.get("courseNameEn", ""))
-    ):
+    if exact_name and (exact_name == title_th or exact_name == title_en):
         score += 12.0
 
-    # 6) follow-up หรือวิชาที่อยากดันเป็นพิเศษ
+    # 6) preferred codes
     if preferred_codes and course.get("courseCode") in preferred_codes:
         score += 15.0
 
-    # 7) penalty เล็กน้อย ถ้าเป็นวิชาทั่วไป
-    category = normalize_text(str(course.get("category", "")))
-    if "general" in category or "ศึกษาทั่วไป" in category:
+    # 7) penalty วิชาทั่วไป
+    if "general" in category_text or "ศึกษาทั่วไป" in category_text:
         score -= 0.5
 
     return score
@@ -1310,12 +1481,19 @@ def rerank_course_candidates(
     exact_course_code = analysis.get("mentioned_course_code")
     exact_course_name = analysis.get("mentioned_course_name")
 
+    if not candidates:
+        return []
+
+    distances = [float(c.get("distance", 999.0)) for c in candidates]
+    min_d = min(distances)
+    max_d = max(distances)
+
     reranked = []
 
     for course in candidates:
         base_distance = float(course.get("distance", 999.0))
 
-        score = score_course_candidate(
+        rule_score = score_course_candidate(
             course=course,
             query_text=query_text,
             include_keywords=include_keywords,
@@ -1325,12 +1503,19 @@ def rerank_course_candidates(
             preferred_codes=preferred_codes,
         )
 
-        # แปลง distance ให้เป็นคะแนนเสริมเล็กน้อย
-        semantic_bonus = max(0.0, 3.0 - base_distance)
-        final_score = score + semantic_bonus
+        # normalize distance -> dense score 0..1
+        if max_d > min_d:
+            dense_score = 1.0 - ((base_distance - min_d) / (max_d - min_d))
+        else:
+            dense_score = 1.0
+
+        # ให้ dense มีผล แต่ไม่กลบ rule ทั้งหมด
+        semantic_bonus = dense_score * 2.0
+        final_score = rule_score + semantic_bonus
 
         item = dict(course)
-        item["ruleScore"] = score
+        item["ruleScore"] = rule_score
+        item["denseScore"] = dense_score
         item["semanticBonus"] = semantic_bonus
         item["finalScore"] = final_score
 
@@ -1346,7 +1531,49 @@ def rerank_course_candidates(
 
     return reranked[: max(1, min(limit, 10))]
 
+def print_ranked_courses(label: str, courses: list[dict]):
+    """
+    ใช้สำหรับ print ลำดับวิชาที่ระบบ "จัดอันดับเสร็จแล้ว"
 
+    ข้อมูลที่ print ออกมาแต่ละช่องหมายถึง:
+    - distance:
+        ระยะห่างจาก vector search (embedding similarity)
+        ยิ่งน้อย = ยิ่งใกล้กับ query/profie text ที่เอาไปค้น
+
+    - ruleScore:
+        คะแนนจากกฎฝั่ง backend ใน score_course_candidate()
+        เช่น keyword match, token overlap, exact match,
+        preferred course, penalty บางอย่าง ฯลฯ
+
+    - semanticBonus:
+        คะแนนเสริมจาก distance
+        คำนวณจาก max(0.0, 3.0 - distance)
+        ใช้เพื่อเอาความใกล้เชิง semantic มาช่วยเพิ่มคะแนน
+
+    - finalScore:
+        คะแนนสุดท้ายหลัง rerank
+        = ruleScore + semanticBonus
+
+    สรุป:
+    log นี้คือ "ผลลำดับสุดท้ายที่ backend จัดเสร็จแล้ว"
+    ก่อนจะไป fetch review / ส่งต่อให้ generate_course_answer()
+    """
+    print(f"\n==== RERANKED COURSES [{label}] ====")
+
+    if not courses:
+        print("(no courses)")
+        return
+
+    for i, c in enumerate(courses, start=1):
+        print(
+            f"{i}. "
+            f"code={c.get('courseCode')} | "
+            f"nameTh={c.get('courseNameTh')} | "
+            f"distance={c.get('distance')} | "
+            f"ruleScore={c.get('ruleScore')} | "
+            f"semanticBonus={c.get('semanticBonus')} | "
+            f"finalScore={c.get('finalScore')}"
+        )
 
 
 def recommend_courses_core(
@@ -1355,6 +1582,7 @@ def recommend_courses_core(
     limit: int,
     mode: Literal["profile_only", "query_aware"],
     session_context: dict[str, Any] | None = None,
+    category_filter: str | None = None,
 ) -> dict[str, Any]:
     session_context = session_context or {}
     safe_limit = max(1, min(limit, 10))
@@ -1409,8 +1637,8 @@ def recommend_courses_core(
             qvec=qvec,
             k=safe_limit,
             candidate_limit=candidate_limit,
+            category_filter=category_filter,
         )
-
         courses = rerank_course_candidates(
             candidates=candidates,
             query_text=signal["embedding_text"],
@@ -1474,6 +1702,23 @@ def recommend_courses_core(
         profile_text=profile_text,
         session_context=session_context,
     )
+    selected_track = normalize_track((session_context or {}).get("selectedTrack"))
+
+# ถ้าเป็นวิชาศึกษาทั่วไป อย่าใช้โปรไฟล์สายคอมมาปน
+    if selected_track == "general":
+        analysis["should_use_profile"] = False
+
+    # สำหรับ GENERAL ถ้ามี query จริง และไม่ใช่ greeting ชัด ๆ
+# ให้ถือว่าเป็นการขอแนะนำวิชา ไม่ใช่ chat
+    if (
+        selected_track == "general"
+        and analysis.get("intent") == "chat"
+        and effective_query
+        and normalize_text(effective_query) not in {"สวัสดี", "หวัดดี", "hello", "hi", "ขอบคุณ", "thank you"}
+    ):
+        analysis["intent"] = "recommend_courses"
+        analysis["query_for_embedding"] = effective_query
+        analysis["should_use_profile"] = False
 
     if analysis.get("topic_shift"):
         session_context = {}
@@ -1489,6 +1734,7 @@ def recommend_courses_core(
             limit=safe_limit,
             mode="profile_only",
             session_context=session_context,
+            category_filter=category_filter,
         )
 
         profile_result["analysis"] = {
@@ -1568,7 +1814,7 @@ def recommend_courses_core(
                     preferred_codes = [current_code]
 
     if preferred_codes:
-        courses = get_courses_by_codes(preferred_codes)
+        courses = get_courses_by_codes(preferred_codes, category_filter=category_filter,)
         reviews = fetch_reviews_for_courses(courses) if courses else {}
 
         next_session_context = {
@@ -1611,13 +1857,17 @@ def recommend_courses_core(
         }
 
     exact_course = find_exact_course_match(
-        query_text=effective_query,
-        mentioned_course_code=analysis.get("mentioned_course_code"),
-        mentioned_course_name=analysis.get("mentioned_course_name"),
-    )
+    query_text=effective_query,
+    mentioned_course_code=analysis.get("mentioned_course_code"),
+    mentioned_course_name=analysis.get("mentioned_course_name"),
+    category_filter=category_filter,
+)
 
     if not exact_course:
-        exact_course = find_course_by_name_in_query(effective_query)
+        exact_course = find_course_by_name_in_query(
+            effective_query,
+            category_filter=category_filter,
+        )
 
     if exact_course:
         courses = [exact_course]
@@ -1686,7 +1936,13 @@ def recommend_courses_core(
         qvec=qvec,
         k=safe_limit,
         candidate_limit=candidate_limit,
+        category_filter=category_filter,
     )
+    print("==== RAW VECTOR CANDIDATES ====")
+    for i, c in enumerate(candidates, 1):
+        print(f"{i}. {c.get('courseCode')} | {c.get('courseNameTh')} | distance={c.get('distance')}")
+            
+
 
     courses = rerank_course_candidates(
         candidates=candidates,
@@ -1765,7 +2021,6 @@ def generate_course_answer(query_text: str, engine_result: dict[str, Any]) -> st
     courses = engine_result.get("courses", []) or []
     reviews = engine_result.get("reviews", {}) or {}
     analysis = engine_result.get("analysis", {}) or {}
-    profile_text = engine_result.get("profileText", "") or ""
 
     intent = analysis.get("intent", "recommend_courses")
     # 🔥 กันกรณีมีวิชาเดียว แต่มีหลาย review
@@ -1778,14 +2033,16 @@ def generate_course_answer(query_text: str, engine_result: dict[str, Any]) -> st
     if not courses:
         if intent == "chat":
             prompt = f"""
-คุณคือผู้ช่วยแนะนำรายวิชาในมหาวิทยาลัย
-ผู้ใช้พูดว่า: "{query_text}"
+You are a university course recommendation assistant.
 
-ตอบอย่างเป็นมิตร กระชับ และบอกว่าคุณช่วยได้เรื่อง:
-- แนะนำรายวิชาตามความสนใจ
-- อธิบายรายวิชา
-- สรุปรีวิว
-- เปรียบเทียบรายวิชา
+User message: "{query_text}"
+
+Reply in Thai in a friendly and concise way.
+Explain that you can help with:
+- recommending courses based on interests
+- explaining course content
+- summarizing student reviews
+- comparing courses
 """.strip()
 
             resp = ollama.chat(
@@ -1799,9 +2056,16 @@ def generate_course_answer(query_text: str, engine_result: dict[str, Any]) -> st
 
         return "ยังไม่พบรายวิชาที่ตรงกับคำถามนี้ในฐานข้อมูล"
 
-    # บังคับให้กรณีแนะนำรายวิชา พยายามใช้ขั้นต่ำ 5 วิชา ถ้ามีพอ
     if intent == "recommend_courses" and len(courses) >= 5:
         courses = courses[: max(5, min(len(courses), 10))]
+
+    print("==== COURSES PASSED TO OLLAMA ====")
+    for i, c in enumerate(courses, 1):
+        print(
+            f"{i}. {c.get('courseCode')} | "
+            f"{c.get('courseNameTh')} | "
+            f"finalScore={c.get('finalScore')}"
+        )
 
     context = build_courses_context(courses)
     print("==== GENERATED CONTEXT ====")
@@ -1810,82 +2074,81 @@ def generate_course_answer(query_text: str, engine_result: dict[str, Any]) -> st
 
     if intent == "follow_up":
         answer_style = """
-นี่เป็นคำถามต่อเนื่อง
-ให้ตอบเฉพาะรายวิชาที่อยู่ใน CONTEXT เท่านั้น
+This is a follow-up question.
+Answer using only the courses in CONTEXT.
 
-กติกา:
-- ถ้าผู้ใช้ถามว่า "แต่ละวิชาเกี่ยวกับอะไร" ให้อธิบายทีละวิชา
-- ถ้าผู้ใช้ถามว่า "วิชาแรก" หรือ "ตัวนี้" ให้ตอบเฉพาะตัวที่เกี่ยวข้อง
-- ถ้ามีการพูดถึงรีวิว ต้องใส่รหัสวิชา ชื่อวิชาภาษาไทย และชื่อวิชาภาษาอังกฤษของวิชานั้นด้วย
-- ถ้าไม่มีรีวิว ให้เขียนว่า "(วิชานี้ยังไม่มีรีวิว)"
-- ห้ามดึงวิชานอก CONTEXT มาตอบ
+Rules:
+- If the user asks what each course is about, explain each course one by one.
+- If the user refers to "the first course" or "this one", answer only the relevant course.
+- If reviews are mentioned, include course code, Thai course name, and English course name.
+- If there is no review, write exactly: "(วิชานี้ยังไม่มีรีวิว)"
+- Do not mention any course outside CONTEXT.
 """
     elif intent == "course_detail":
         answer_style = """
-ผู้ใช้กำลังถามเจาะรายวิชา
-ให้ตอบเฉพาะรายวิชาที่เกี่ยวข้องใน CONTEXT
+The user is asking about a specific course.
+Answer only using the relevant course in CONTEXT.
 
-รูปแบบการตอบ:
-- ระบุชื่อวิชาภาษาไทย (รหัสวิชา) / ชื่อวิชาภาษาอังกฤษ
-- อธิบายว่าวิชานี้เรียนเกี่ยวกับอะไร
-- ได้ทักษะอะไร
-- มีรีวิวหรือไม่
+Required format:
+- Thai course name (course code) / English course name
+- Explain what the course is about
+- Explain what skills the student will gain
+- Mention whether reviews exist
 
-กติกา:
-- ถ้าไม่มีรีวิว ให้เขียนว่า "(วิชานี้ยังไม่มีรีวิว)"
-- ห้ามแนะนำวิชาอื่นเพิ่ม ถ้า CONTEXT มีวิชาเดียว
-- ห้ามใช้ข้อมูลนอก CONTEXT และ REVIEWS
+Rules:
+- If there is no review, write exactly: "(วิชานี้ยังไม่มีรีวิว)"
+- If CONTEXT contains only one course, do not recommend any additional courses.
+- Do not use any information outside CONTEXT and REVIEWS.
 """
     else:
         answer_style = """
-ผู้ใช้กำลังขอคำแนะนำรายวิชา
+The user is asking for course recommendations.
 
-ต้องตอบ "ตามรูปแบบนี้เท่านั้น"
+You must follow this format exactly.
 
 **คำแนะนำภาพรวม**
-เขียนสรุปภาพรวม 1 ย่อหน้าสั้น
+Write one short overview paragraph.
 
 **วิชาที่แนะนำ**
-ต้องแนะนำอย่างน้อย 3 วิชาเสมอ ถ้า CONTEXT มีถึง 3 วิชาหรือมากกว่า
-- ถ้ามีวิชาเดียวใน CONTEXT ห้ามทำ list 3 ข้อ
-- ให้ตอบเป็นวิชาเดียวเท่านั้น ถ้า CONTEXT มีแค่ 1 วิชา
-สำหรับแต่ละวิชา ต้องใช้รูปแบบนี้เท่านั้น:
-• **[ลำดับ] ชื่อวิชาภาษาไทย (รหัสวิชา) / ชื่อวิชาภาษาอังกฤษ**: เหตุผลแนะนำ 1-2 ประโยค
+Always recommend at least 5 courses if CONTEXT contains 5 or more courses.
+- If CONTEXT has fewer than 5 courses, recommend all available courses.
+- Do not answer with fewer than 5 courses if CONTEXT contains 5 or more courses.
+
+For each course, use exactly this format:
+• **[ลำดับ] ชื่อวิชาภาษาไทย (รหัสวิชา) / ชื่อวิชาภาษาอังกฤษ**: 1-2 sentences explaining why this course is recommended
 
 **สรุปรีวิวจากนักศึกษา**
-สำหรับแต่ละวิชา ต้องใช้รูปแบบนี้เท่านั้น:
-• **[ลำดับ] ชื่อวิชาภาษาไทย (รหัสวิชา) / ชื่อวิชาภาษาอังกฤษ**: [สรุปรีวิว]
-ถ้าไม่มีรีวิว ให้ใช้รูปแบบนี้:
+For each course, use exactly this format:
+• **[ลำดับ] ชื่อวิชาภาษาไทย (รหัสวิชา) / ชื่อวิชาภาษาอังกฤษ**: [review summary]
+
+If there is no review, use exactly this format:
 • **[ลำดับ] ชื่อวิชาภาษาไทย (รหัสวิชา) / ชื่อวิชาภาษาอังกฤษ**: (วิชานี้ยังไม่มีรีวิว)
 
-ข้อบังคับ:
-- ต้องมีรหัสวิชา + ชื่อไทย + ชื่ออังกฤษ ทุกครั้ง ทั้งในส่วนวิชาที่แนะนำและสรุปรีวิว
-- ห้ามสรุปรวมท้ายคำตอบว่า "หมายเหตุ: ..."
-- ถ้าวิชาใดไม่มีรีวิว ให้ใส่ "(วิชานี้ยังไม่มีรีวิว)" ต่อท้ายวิชานั้นโดยตรง
-- ห้ามตอบเหลือ 2 วิชา ถ้า CONTEXT มีตั้งแต่ 3 วิชาขึ้นไป
-- ห้ามใช้ข้อมูลนอก CONTEXT และ REVIEWS
-- ห้ามแต่งรีวิวเอง
+Strict requirements:
+- Always include course code + Thai name + English name in both the recommendation section and the review section
+- Do not add a final note such as "หมายเหตุ: ..."
+- If a course has no review, append "(วิชานี้ยังไม่มีรีวิว)" directly to that course
+- Do not answer with fewer than 5 courses if CONTEXT contains 5 or more courses
+- Do not use any information outside CONTEXT and REVIEWS
+- Do not invent reviews
 """
-
     prompt = f"""
-คุณคือผู้ช่วยแนะนำรายวิชาในมหาวิทยาลัย
-ให้ตอบจาก CONTEXT และ REVIEWS เท่านั้น
+You are a university course recommendation assistant.
+Answer using CONTEXT and REVIEWS only.
 
-กฎสำคัญ:
-- ห้ามแนะนำวิชาที่ไม่อยู่ใน CONTEXT
-- ห้ามเดาหรือเติมเทคโนโลยี/เครื่องมือที่ไม่ได้อยู่ในข้อมูลรายวิชา
-- ถ้าไม่มีรีวิว ห้ามแต่งรีวิวเองเด็ดขาด
-- ถ้าไม่มีรีวิว ต้องใช้คำว่า "(วิชานี้ยังไม่มีรีวิว)" เท่านั้น
-- ถ้าเป็นการแนะนำรายวิชา ต้องรักษารูปแบบหัวข้อและรูปแบบ bullet ตามที่กำหนดอย่างเคร่งครัด
-- ในส่วน "สรุปรีวิวจากนักศึกษา" ต้องเรียงวิชาตามลำดับเดียวกับส่วน "วิชาที่แนะนำ"
+Important rules:
+- Do not recommend any course outside CONTEXT
+- Do not guess or add technologies/tools that are not explicitly in the course data
+- If no review exists, do not invent one
+- If no review exists, use exactly: "(วิชานี้ยังไม่มีรีวิว)"
+- For course recommendations, strictly follow the required headings and bullet format
+- In the "สรุปรีวิวจากนักศึกษา" section, keep the same course order as in the "วิชาที่แนะนำ" section
 
-แนวทางการตอบ:
+Response instructions:
 {answer_style}
 
-โปรไฟล์ผู้ใช้ (ใช้เพื่อช่วยตีความเท่านั้น):
-{profile_text or "ไม่มี"}
 
-การวิเคราะห์คำถาม:
+Question analysis:
 {json.dumps(analysis, ensure_ascii=False, indent=2)}
 
 CONTEXT:
@@ -1894,23 +2157,25 @@ CONTEXT:
 REVIEWS:
 {reviews_context}
 
-คำถามผู้ใช้:
+User question:
 {query_text}
 
-ตอบเป็นภาษาไทย กระชับ ชัดเจน อ่านง่าย
+Final answer requirements:
+- Write the final answer in Thai
+- Keep it concise, clear, and easy to read
+- Preserve the exact Thai section headings shown above
 """.strip()
 
     try:
         resp = ollama.chat(
             model=OLLAMA_MODEL,
             messages=[
-                {"role": "system", "content": "You are a precise university course advisor."},
+                {"role": "system", "content": "You are a precise university course advisor. Follow instructions exactly and answer in Thai when requested."},
                 {"role": "user", "content": prompt},
             ],
         )
         answer = resp["message"]["content"].strip()
     except Exception:
-        # fallback กรณี model ล่ม
         if intent == "recommend_courses":
             lines = []
             lines.append("**คำแนะนำภาพรวม**")
@@ -1918,7 +2183,7 @@ REVIEWS:
             lines.append("")
             lines.append("**วิชาที่แนะนำ**")
 
-            for i, c in enumerate(courses[: max(3, min(len(courses), 5))], start=1):
+            for i, c in enumerate(courses[: max(5, min(len(courses), 6))], start=1):
                 lines.append(
                     f"• **[{i}] {c.get('courseNameTh', '-')} ({c.get('courseCode', '-')}) / {c.get('courseNameEn', '-')}**: "
                     f"วิชานี้มีเนื้อหาที่สอดคล้องกับคำถามและสามารถช่วยต่อยอดความรู้ในด้านที่คุณสนใจได้"
@@ -1927,7 +2192,7 @@ REVIEWS:
             lines.append("")
             lines.append("**สรุปรีวิวจากนักศึกษา**")
 
-            for i, c in enumerate(courses[: max(3, min(len(courses), 5))], start=1):
+            for i, c in enumerate(courses[: max(5, min(len(courses), 6))], start=1):
                 review_text = reviews.get(c.get("courseCode", ""), "")
                 if not review_text or "ยังไม่มีรีวิว" in review_text:
                     lines.append(
@@ -1947,7 +2212,6 @@ REVIEWS:
     return answer
 
 
-
 def get_user_career_goals(user_id: int):
     profile = get_user_profile(user_id)
     return profile.get("careerGoals") if profile else None
@@ -1957,13 +2221,27 @@ def get_user_career_goals(user_id: int):
 
 @app.post("/rag/answer")
 def rag_answer(req: RagRequest):
+    selected_track = resolve_selected_track(req.track, req.sessionContext)
+    category_filter = resolve_category_filter(selected_track)
+
+    merged_session_context = {
+        **(req.sessionContext or {}),
+        "selectedTrack": selected_track,
+    }
+
     result = recommend_courses_core(
         user_id=req.userId,
         query_text=req.queryText,
         limit=req.topK,
         mode="query_aware",
-        session_context=req.sessionContext,
+        session_context=merged_session_context,
+        category_filter=category_filter,
     )
+
+    result["sessionContext"] = {
+        **(result.get("sessionContext") or {}),
+        "selectedTrack": selected_track,
+    }
 
     answer = generate_course_answer(req.queryText, result)
 
@@ -1971,18 +2249,36 @@ def rag_answer(req: RagRequest):
         "answer": answer,
         "sources": result["courses"],
         "sessionContext": result["sessionContext"],
-        "debug": result["debug"],
+        "debug": {
+            **result["debug"],
+            "selectedTrack": selected_track,
+            "categoryFilter": category_filter,
+        },
     }
 
 @app.post("/rag/answer-career")
 def rag_answer_career(req: RagRequest):
+    selected_track = resolve_selected_track(req.track, req.sessionContext)
+    category_filter = resolve_category_filter(selected_track)
+
+    merged_session_context = {
+        **(req.sessionContext or {}),
+        "selectedTrack": selected_track,
+    }
+
     result = recommend_courses_core(
         user_id=req.userId,
         query_text=req.queryText,
         limit=req.topK,
         mode="query_aware",
-        session_context=req.sessionContext,
+        session_context=merged_session_context,
+        category_filter=category_filter,
     )
+
+    result["sessionContext"] = {
+        **(result.get("sessionContext") or {}),
+        "selectedTrack": selected_track,
+    }
 
     answer = generate_course_answer(req.queryText, result)
 
@@ -1990,23 +2286,37 @@ def rag_answer_career(req: RagRequest):
         "answer": answer,
         "sources": result["courses"],
         "sessionContext": result["sessionContext"],
-        "debug": result["debug"],
+        "debug": {
+            **result["debug"],
+            "selectedTrack": selected_track,
+            "categoryFilter": category_filter,
+        },
     }
 
 class RecommendCoursesRequest(BaseModel):
     userId: int
     limit: int = 10
+    track: Literal["elective", "general"] = "elective"
 
 
 @app.post("/recommendations/courses")
 def recommend_courses_legacy(req: RecommendCoursesRequest):
+    selected_track = normalize_track(req.track)
+    category_filter = resolve_category_filter(selected_track)
+
     result = recommend_courses_core(
         user_id=req.userId,
         query_text=None,
         limit=req.limit,
         mode="profile_only",
         session_context=None,
+        category_filter=category_filter,
     )
+
+    result["sessionContext"] = {
+        **(result.get("sessionContext") or {}),
+        "selectedTrack": selected_track,
+    }
 
     return {
         "ok": True,
@@ -2015,9 +2325,12 @@ def recommend_courses_legacy(req: RecommendCoursesRequest):
         "count": len(result["courses"]),
         "courses": result["courses"],
         "sessionContext": result["sessionContext"],
-        "debug": result["debug"],
+        "debug": {
+            **result["debug"],
+            "selectedTrack": selected_track,
+            "categoryFilter": category_filter,
+        },
     }
-
 
 class CourseSummaryRequest(BaseModel):
     courseCode: str
@@ -2065,73 +2378,6 @@ def fetch_course_and_reviews_by_code(course_code: str, max_reviews: int):
 
     return course, reviews
 
-class RecommendCoursesRequest(BaseModel):
-    userId: int
-    limit: int = 10
-
-@app.post("/recommendations/courses")
-def recommend_courses(req: RecommendCoursesRequest):
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # ดึง embedding ของ user
-    cur.execute("""
-        SELECT embedding
-        FROM user_profile
-        WHERE id = %s
-    """, (req.userId,))
-
-    row = cur.fetchone()
-
-    if not row or row[0] is None:
-        cur.close()
-        conn.close()
-        return {"ok": False, "error": "user embedding not found"}
-
-    user_embedding = row[0]
-
-    cur.execute(f"""
-        SELECT
-            "courseCode",
-            "courseNameTh",
-            "courseNameEn",
-            description,
-            "descriptionEn",
-            credits,
-            category,
-            "imageUrl"
-        FROM {COURSE_TABLE}
-        WHERE embedding IS NOT NULL
-        ORDER BY embedding <-> %s
-        LIMIT %s
-    """, (user_embedding, req.limit))
-
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    courses = []
-
-    for courseCode, courseNameTh, courseNameEn, description, descriptionEn, credits, category, imageUrl in rows:
-        courses.append({
-            "courseCode": courseCode,
-            "courseNameTh": courseNameTh,
-            "courseNameEn": courseNameEn,
-            "description": description,
-            "descriptionEn": descriptionEn,
-            "credits": credits,
-            "category": category,
-            "imageUrl": imageUrl
-        })
-
-    return {
-        "ok": True,
-        "userId": req.userId,
-        "count": len(courses),
-        "courses": courses
-    }
 
 
 @app.post("/courses/summary")
@@ -2283,19 +2529,48 @@ def summarize_course(req: CourseSummaryRequest):
 
 def search_courses_by_keyword(query_text: str, limit: int = 5) -> list[dict[str, Any]]:
     query_text = (query_text or "").strip()
+
     if not query_text:
         return []
+
+    expanded = expand_query_with_ollama(
+        query_text=query_text,
+        analysis=None,
+    )
+
+    expanded_query = (expanded.get("expanded_query") or "").strip()
+    skill_keywords = expanded.get("skill_keywords") or []
+    negative_keywords = expanded.get("negative_keywords") or []
+
+    # ใช้เฉพาะ query เดิม + expanded + skill สำหรับทำ embedding
+    embedding_parts = [query_text]
+
+    if expanded_query and expanded_query != query_text:
+        embedding_parts.append(expanded_query)
+
+    if skill_keywords:
+        embedding_parts.append(" ".join(str(k).strip() for k in skill_keywords if str(k).strip()))
+
+    embedding_text = " ".join(part.strip() for part in embedding_parts if part and part.strip())
+
+    print("==== SEARCH QUERY ORIGINAL ====")
+    print(query_text)
+    print("==== SEARCH QUERY EXPANDED ====")
+    print(expanded)
+    print("==== SEARCH EMBEDDING TEXT ====")
+    print(embedding_text)
+    print("==== SEARCH NEGATIVE KEYWORDS ====")
+    print(negative_keywords)
 
     conn = get_conn()
     cur = conn.cursor()
 
     try:
-        # 1) แปลงคำถามผู้ใช้เป็น vector
-        qvec = embedder.encode(query_text).tolist()
+        qvec = embedder.encode(embedding_text).tolist()
         qvec_str = "[" + ", ".join(map(str, qvec)) + "]"
 
-        # 2) ค้นด้วย vector similarity จาก embedding ในฐานข้อมูล
-        #    distance ยิ่งน้อยยิ่งใกล้
+        # ดึงมาเผื่อกรองออกทีหลัง
+        fetch_limit = 5
         cur.execute("""
             SELECT
                 "courseCode",
@@ -2311,13 +2586,13 @@ def search_courses_by_keyword(query_text: str, limit: int = 5) -> list[dict[str,
             WHERE embedding IS NOT NULL
             ORDER BY distance ASC
             LIMIT %s
-        """, (qvec_str, limit))
+        """, (qvec_str,fetch_limit))
 
         rows = cur.fetchall()
 
         results = []
         for r in rows:
-            results.append({
+            course = {
                 "courseCode": r[0],
                 "courseNameTh": r[1],
                 "courseNameEn": r[2],
@@ -2327,13 +2602,39 @@ def search_courses_by_keyword(query_text: str, limit: int = 5) -> list[dict[str,
                 "category": r[6],
                 "imageUrl": r[7],
                 "distance": float(r[8]),
-            })
+            }
+
+            # รวมข้อความไว้เช็ก negative
+            haystack = " ".join([
+                str(course.get("courseCode") or ""),
+                str(course.get("courseNameTh") or ""),
+                str(course.get("courseNameEn") or ""),
+                str(course.get("description") or ""),
+                str(course.get("descriptionEn") or ""),
+                str(course.get("category") or ""),
+            ]).lower()
+
+            blocked = False
+            for keyword in negative_keywords:
+                keyword_text = str(keyword).strip().lower()
+                if keyword_text and keyword_text in haystack:
+                    blocked = True
+                    break
+
+            if blocked:
+                continue
+
+            results.append(course)
+
+            if len(results) >= limit:
+                break
 
         return results
 
     finally:
         cur.close()
         conn.close()
+
 
 @app.post("/test/search")
 def test_search(req: dict):
