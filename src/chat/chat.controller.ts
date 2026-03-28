@@ -48,20 +48,22 @@ export class ChatController {
   }
 
   @Post('sessions/:id/messages')
-  async sendMessage(
-    @Req() req: JwtReq,
-    @Param('id') sessionId: string,
-    @Body() body: { content: string; topK?: number },
-  ) {
-    const userId = req.user?.id;
-    if (!userId) throw new BadRequestException('Missing user');
+async sendMessage(
+  @Req() req: JwtReq,
+  @Param('id') sessionId: string,
+  @Body() body: { content: string; topK?: number; track?: 'cs' | 'general' },
+) {
+  const userId = req.user?.id;
+  if (!userId) throw new BadRequestException('Missing user');
 
-    const content = (body?.content ?? '').trim();
-    if (!content) throw new BadRequestException('content is required');
+  const content = (body?.content ?? '').trim();
+  if (!content) throw new BadRequestException('content is required');
 
-    const topK = body?.topK ?? 3;
-    return this.chatService.sendMessage(userId, sessionId, content, topK);
-  }
+  const topK = body?.topK ?? 3;
+  const track = body?.track === 'general' ? 'general' : 'elective';
+
+  return this.chatService.sendMessage(userId, sessionId, content, topK, track);
+}
 
   @Delete('sessions/:id')
   async deleteSession(@Req() req: JwtReq, @Param('id') sessionId: string) {

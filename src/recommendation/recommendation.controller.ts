@@ -1,8 +1,22 @@
 import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { RecommendationService } from './recommendation.service';
-import { RagRequestDto } from './dto/rag-request.dto';
 import { EmbedMissingDto, EmbedOneDto } from './dto/embed.dto';
 import { AuthGuard } from '@nestjs/passport';
+
+type RecommendationTrack = 'elective' | 'general';
+
+type RagHistoryItem = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+type RagBody = {
+  queryText: string;
+  topK?: number;
+  track?: RecommendationTrack;
+  chatHistory?: RagHistoryItem[];
+  sessionContext?: Record<string, any> | null;
+};
 
 @Controller()
 export class RecommendationController {
@@ -10,9 +24,14 @@ export class RecommendationController {
 
   @UseGuards(AuthGuard('jwt'))
   @Post('recommendations/rag')
-  async rag(@Body() dto: RagRequestDto, @Req() req: any) {
+  async rag(@Body() dto: RagBody, @Req() req: any) {
     const userId = req.user.id;
-    return this.svc.ragAnswer(dto.queryText, dto.topK ?? 5, userId);
+
+    return this.svc.ragAnswer(dto.queryText, dto.topK ?? 5, userId, {
+      track: dto.track ?? 'elective',
+      chatHistory: dto.chatHistory ?? [],
+      sessionContext: dto.sessionContext ?? null,
+    });
   }
 
   @Post('recommendations/embed-one')
@@ -27,11 +46,15 @@ export class RecommendationController {
 
   @UseGuards(AuthGuard('jwt'))
   @Post('courses/recommend')
-  async recommendCourses(@Req() req: any, @Body() body: { limit?: number }) {
+  async recommendCourses(
+    @Req() req: any,
+    @Body() body: { limit?: number; track?: RecommendationTrack },
+  ) {
     const authHeader = req.headers?.authorization ?? '';
     const userId = req.user.id;
     const limit = body.limit ?? 10;
+    const track = body.track ?? 'elective';
 
-    return this.svc.recommendCourses(userId, limit, authHeader);
+    return this.svc.recommendCourses(userId, limit, authHeader, track);
   }
 }

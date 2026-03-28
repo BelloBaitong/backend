@@ -36,4 +36,7 @@ export class CreateCourseDto {
   @IsOptional()
   imageUrl?: string;
 
+  @IsString()
+  @IsOptional()
+  descriptionExpand?: string;
 }

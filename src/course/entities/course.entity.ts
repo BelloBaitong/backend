@@ -43,11 +43,13 @@ export class Course {
   @OneToMany(() => Review, (review) => review.course)
   reviews: Review[];
 
-  @Column({
-  type: 'vector',
-  nullable: true,
-})
+  @Column({type: 'vector',nullable: true,})
 embedding: number[];
+
+// เพิ่มคอลัมน์ test
+  @Column({ type: 'text', nullable: true })
+  descriptionExpand?: string; // คำอธิบายวิชาภาษาไทย (สำหรับทดสอบ)
+
 
 
 }

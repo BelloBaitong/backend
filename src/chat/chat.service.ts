@@ -16,6 +16,7 @@ type RagHistoryItem = {
   role: 'user' | 'assistant';
   content: string;
 };
+type ChatTrack = 'elective' | 'general';
 
 @Injectable()
 export class ChatService {
@@ -114,12 +115,13 @@ export class ChatService {
     }));
   }
 
-  async sendMessage(
-    userId: number,
-    sessionId: string,
-    content: string,
-    topK: number,
-  ) {
+async sendMessage(
+  userId: number,
+  sessionId: string,
+  content: string,
+  topK: number,
+  track: ChatTrack = 'elective',
+) {
     if (!userId) throw new BadRequestException('Missing userId');
     if (!sessionId) throw new BadRequestException('Missing sessionId');
 
@@ -159,16 +161,35 @@ export class ChatService {
       session.title = nextTitle;
     }
 
-    const chatHistory = await this.buildRecentChatHistory(session.id, 8);
-    const sessionContext = this.normalizeSessionContext(session.sessionContext);
+const chatHistory = await this.buildRecentChatHistory(session.id, 8);
+const currentSessionContext =
+  this.normalizeSessionContext(session.sessionContext);
 
-    const rag = await this.recommendationService.ragAnswer(text, topK, userId, {
-      chatHistory,
-      sessionContext,
-    });
+const selectedTrack: ChatTrack =
+  track === 'general'
+    ? 'general'
+    : currentSessionContext?.selectedTrack === 'general'
+    ? 'general'
+    : 'elective';
 
-    const nextSessionContext =
-      this.normalizeSessionContext(rag?.sessionContext) ?? sessionContext;
+const rag = await this.recommendationService.ragAnswer(text, topK, userId, {
+  chatHistory,
+  sessionContext: {
+    ...(currentSessionContext ?? {}),
+    selectedTrack,
+  },
+  track: selectedTrack,
+});
+
+const ragSessionContext =
+  this.normalizeSessionContext(rag?.sessionContext) ?? null;
+
+const nextSessionContext = {
+  ...(currentSessionContext ?? {}),
+  ...(ragSessionContext ?? {}),
+  selectedTrack:
+    ragSessionContext?.selectedTrack === 'general' ? 'general' : selectedTrack,
+};
 
     const botMsg = this.messageRepo.create({
       session: { id: session.id } as ChatSession,
@@ -178,13 +199,13 @@ export class ChatService {
     });
     const savedBotMsg = await this.messageRepo.save(botMsg);
 
-    await this.sessionRepo.update(
-      { id: session.id },
-      {
-        updatedAt: new Date(),
-        sessionContext: nextSessionContext,
-      },
-    );
+await this.sessionRepo.update(
+  { id: session.id },
+  {
+    updatedAt: new Date(),
+    sessionContext: nextSessionContext as any,
+  },
+);
 
     return {
       userMessage: {
